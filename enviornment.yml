@@ -1,4 +1,4 @@
-name: project-template
+name: rulecosi
 dependencies:
   - numpy
   - scipy

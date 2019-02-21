@@ -17,18 +17,15 @@
 .. |ReadTheDocs| image:: https://readthedocs.org/projects/sklearn-template/badge/?version=latest
 .. _ReadTheDocs: https://sklearn-template.readthedocs.io/en/latest/?badge=latest
 
-project-template - A template for scikit-learn contributions
-============================================================
+RuleCOSI - Rule extraction COmbination and SImplification from ensembles of decision trees
+==========================================================================================
 
-.. _scikit-learn: https://scikit-learn.org
+.. _IAI: http://iai.khu.ac.kr/wiki/wiki.php
 
-**project-template** is a template project for scikit-learn_ compatible
-extensions.
+**RuleCOSI** is an machine learning extension of scikit-learn created in the Industrial Artificial
+Intelligence (IAI_) lab in Kyung Hee University.
 
-It aids development of estimators that can be used in scikit-learn pipelines
-and (hyper)parameter search, while facilitating testing (including some API
-compliance), documentation, open source development, packaging, and continuous
-integration.
+The
 
 .. _documentation: https://sklearn-template.readthedocs.io/en/latest/quick_start.html
 

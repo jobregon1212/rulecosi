@@ -8,10 +8,13 @@ An example plot of :class:`rulecosi.template.TemplateClassifier`
 import numpy as np
 from matplotlib import pyplot as plt
 from rulecosi import RuleCOSIClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.tree import DecisionTreeClassifier
 
 X = [[0, 0], [1, 1]]
 y = [0, 1]
 clf = RuleCOSIClassifier()
+#clf = AdaBoostClassifier(DecisionTreeClassifier(max_depth=1), algorithm="SAMME", n_estimators=200)
 clf.fit(X, y)
 
 rng = np.random.RandomState(13)

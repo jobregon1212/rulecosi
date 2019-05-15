@@ -1,9 +1,0 @@
-from sklearn.datasets import load_iris
-from rulecosi import RuleCOSIClassifier
-
-
-iris = load_iris()
-X = iris.data[:, :2]  # we only take the first two features.
-y = iris.target
-clf = RuleCOSIClassifier()
-clf.fit(X, y)

@@ -12,12 +12,12 @@ with open(ver_file) as f:
     exec(f.read())
 
 DISTNAME = 'rulecosi'
-DESCRIPTION = 'A template for scikit-learn compatible packages.'
+DESCRIPTION = 'A machine learning algorithm to combine and simplify rules from ensembles of decision trees.'
 with codecs.open('README.rst', encoding='utf-8-sig') as f:
     LONG_DESCRIPTION = f.read()
-MAINTAINER = 'V. Birodkars, G. Lemaitre'
-MAINTAINER_EMAIL = 'vighneshbirodkar@nyu.edu, g.lemaitre58@gmail.com'
-URL = 'https://github.com/scikit-learn-contrib/project-template'
+MAINTAINER = 'J. Obregon'
+MAINTAINER_EMAIL = 'jobregon@khu.ac.kr'
+URL = 'https://github.com/pandobre/rulecosi'
 LICENSE = 'new BSD'
 DOWNLOAD_URL = 'https://github.com/scikit-learn-contrib/project-template'
 VERSION = __version__

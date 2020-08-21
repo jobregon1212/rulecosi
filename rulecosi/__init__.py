@@ -1,7 +1,7 @@
 from ._template import TemplateEstimator
 from ._template import TemplateClassifier
 from ._template import TemplateTransformer
-from .rulecosi import RuleCOSIClassifier
+from ._rulecosi import RuleCOSIClassifier
 from .rules import Condition
 from .rules import Rule
 

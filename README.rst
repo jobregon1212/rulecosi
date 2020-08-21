@@ -27,9 +27,6 @@ Intelligence (IAI_) lab in Kyung Hee University.
 
 The
 
-.. _documentation: https://sklearn-template.readthedocs.io/en/latest/quick_start.html
 
-Refer to the documentation_ to modify the template for your own scikit-learn
-contribution.
 
 *Thank you for cleanly contributing to the scikit-learn ecosystem!*

@@ -1,9 +1,14 @@
 from enum import Enum
-from scipy.special import expit, logsumexp
 import numpy as np
 
 
 class RuleSet:
+
+    def __init__(self, ruleset):
+        self._rules = ruleset.get_rule_list()
+        self._condition_map = ruleset.get_condition_map()
+        self.n_total_ant = ruleset.n_total_ant
+        self.n_uniq_ant = ruleset.n_uniq_ant
 
     def __init__(self, rules=[], condition_map={}):
         self._rules = rules
@@ -16,6 +21,9 @@ class RuleSet:
 
     def get_condition_map(self):
         return self._condition_map
+
+    def get_rule(self, idx=0):
+        return self._rules[idx]
 
     def get_rule_list(self):
         return self._rules
@@ -68,35 +76,58 @@ class Rule:
                 return cond
         return None
 
+    def A(self, frozen=True):
+        if frozen:
+            return self._A
+        else:
+            return set(self._A)
+
+    def y(self):
+        return self._y
+
+    def class_index(self):
+        return self._class_index
+
+    def class_distribution(self):
+        return self._class_dist
+
+    def logit_score(self):
+        return self._logit_score
+
+    def n_samples(self):
+        return self._n_samples
+
+    def cov(self):
+        return self._cov
+
+    def supp(self):
+        return self._supp
+
+    def conf(self):
+        return self._conf
+
     def add_condition(self, condition):
         if condition not in self._A:
             self._A.add(condition)
 
-    def __init__(self, conditions, type_='classifier', value=None, n_samples=0, n_outputs=1, classes=[1, -1]):
+    def set_measures(self, cov, conf, supp):
+        self._cov = cov
+        self._conf = conf
+        self._supp = supp
+
+    def __init__(self, conditions, class_dist=[0.5, 0.5], logit_score=None, y=None, y_class_index=None, n_samples=0,
+                 n_outputs=1, classes=None):
         self._A = conditions  # conditions
-        if value is None:
-            self._value = np.zeros((n_outputs, len(classes))).tolist()
-        else:
-            self._value = value.tolist()
-        # define predicted class possible types {'classifier', 'gradient_classifier', 'regressor'}
-        self.type_ = type_
-        if type_ == 'classifier':
-            #self._y = np.argmax(value, axis=1).tolist()  # consequent
-            self._y = [classes[np.argmax(value, axis=1).item()]]
-        elif type_ == 'gradient_classifier':
-            if len(classes)==2:
-                raw_to_proba = expit(self._value)
-                if raw_to_proba > 0.5:
-                    self._y= [classes[0]]
-                else:
-                    self._y = [classes[1]]
-            else:
-                raw_to_proba = expit(self._value)
-                self._y = [classes[np.argmax(raw_to_proba, axis=1)]]#.tolist()  # consequent
-        elif type == 'regressor':
-            self._y = value
-        self.n_samples = n_samples
-        self._c = []  # combination vector
+        self._class_dist = list(class_dist)
+        self._logit_score = logit_score
+        self._y = list(y)
+        self._class_index = y_class_index
+        self._n_samples = n_samples
+        self._n_outputs = n_outputs
+        self._classes = list(classes)
+        self._cov = 0
+        self._supp = 0
+        self._conf = 0
 
     def __str__(self):
         return_string = ' ˄ '.join(map(str, self._A))
@@ -145,12 +176,15 @@ class Condition:
         if self._operator == Operator.DIFFERENT_THAN:
             return value != self._value
 
-    def get_attribute_index(self):
+    def attribute_index(self):
         # return str(self._att_index) + str(ord(self._operator)) + str(self._value)
         return self._att_index
 
-    def get_id(self):
-        return self._att_index
+    def operator(self):
+        return self._operator
+
+    def value(self):
+        return self._value
 
     def __init__(self, att_index, operator, value, att_name=None):
         self._att_index = int(att_index)

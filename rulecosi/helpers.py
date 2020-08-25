@@ -16,14 +16,13 @@ def remove_duplicated_rules(list_of_rulesets, weights=None):
         new_weights = []
     else:
         new_weights = None
-    i = 0
-    for ruleset in list_of_rulesets:
+
+    for idx, ruleset in enumerate(list_of_rulesets):
         filtered_rules = [x for x in ruleset if not not_exists_add(x, x_set)]
         if len(filtered_rules) > 0:
             new_list_rulesets.append(RuleSet(filtered_rules, ruleset.get_condition_map()))
             if weights is not None:
-                new_weights.append(weights[i])
-        i += 1
+                new_weights.append(weights[idx])
     return new_list_rulesets, new_weights, x_set
 
 
@@ -40,3 +39,18 @@ def zero_bitarray(size):
     b_array = bitarray(size)
     b_array.setall(False)
     return b_array
+
+
+def list_and_operation(list_):
+    return_set = list_[0]
+    for i in range(1, len(list_)):
+        return_set = return_set & list_[i]
+    return return_set
+
+
+def list_or_operation(list_):
+    return_set = list_[0]
+    for i in range(1, len(list_)):
+        return_set = return_set | list_[i]
+    return return_set
+

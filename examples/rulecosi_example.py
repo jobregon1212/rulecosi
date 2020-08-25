@@ -18,12 +18,14 @@ else:
 
 
 
-#clf = RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(n_estimators=5),random_state=1212)
+clf = RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(n_estimators=5),random_state=1212)
 #clf = RuleCOSIClassifier(base_ensemble=RandomForestClassifier(n_estimators=5),random_state=1212)
 #clf = RuleCOSIClassifier(base_ensemble=BaggingClassifier(n_estimators=5),random_state=1212)
-clf = RuleCOSIClassifier(n_estimators=5, random_state=1212)
+#clf = RuleCOSIClassifier(n_estimators=5, random_state=1212)
 clf.fit(X, y)
 
 print(clf._original_rulesets[0])
+print(clf._original_rulesets[1])
+print(clf._original_rulesets[2])
 #print(clf._rulesets_test)
 

@@ -1,4 +1,7 @@
-from rulecosi.rules import RuleSet
+
+import numpy as np
+
+from rulecosi.rules import RuleSet, Rule, Condition
 from bitarray import bitarray
 
 def not_exists_add(element, set_):
@@ -41,6 +44,12 @@ def zero_bitarray(size):
     return b_array
 
 
+def one_bitarray(size):
+    b_array = bitarray(size)
+    b_array.setall(True)
+    return b_array
+
+
 def list_and_operation(list_):
     return_set = list_[0]
     for i in range(1, len(list_)):
@@ -53,4 +62,16 @@ def list_or_operation(list_):
     for i in range(1, len(list_)):
         return_set = return_set | list_[i]
     return return_set
+
+
+def count_rules_conds(ruleset):
+    total_cond = 0
+    for rule in ruleset:
+        total_cond += len(rule.A())
+    return len(ruleset), total_cond
+
+
+# https://stackoverflow.com/questions/54699105/how-to-count-the-number-of-occurrences-of-a-nested-dictionary-key
+def count_keys(dict_, key):
+    return (key in dict_) + sum(count_keys(v, key) for v in dict_.values() if isinstance(v, dict))
 

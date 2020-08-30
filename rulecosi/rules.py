@@ -36,7 +36,7 @@ class RuleSet:
 
     def __str__(self):
         return_str = ''
-        i = 1;
+        i = 1
         for rule in self._rules:
             # rule_string = ' ˄ '.join(map(lambda cond: str(self._A_star[cond]),self._A_star))
             rule_string = 'r_{}: '.format(i)
@@ -60,13 +60,32 @@ class RuleSet:
             n_total_ant += len(rule._A)
         return len(self._rules), n_uniq_ant / n_total_ant
 
+    def predict(self, X):
+        return np.array([self.predict_single(row) for row in X])
+
+    def predict_proba(self, X):
+        return np.array([self.predict_single(row,proba=True) for row in X])
+
+    def predict_single(self, X, proba=False):
+        for rule in self._rules:
+            if rule.covers(X, self._condition_map):
+                if proba:
+                    return rule.class_distribution()
+                else:
+                    return rule.y()[0]
+        if proba:
+            return self._rules[0].class_distribution()
+        else:
+            return self._rules[0].y()[0]
+
 
 class Rule:
 
-    def covers(self, instance):
-        for att_index, value in instance.items():
-            cond = self.get_condition(int(att_index))
-            if cond is None or not cond.satisfies(value):
+    def covers(self, instance, condition_map):
+        if len(self._A) == 0:  # default rule
+            return True
+        for cond in [condition_map[c] for c in self._A]:
+            if not cond.satisfies(instance[cond.attribute_index()]):
                 return False
         return True
 
@@ -82,14 +101,17 @@ class Rule:
         else:
             return set(self._A)
 
+    def set_A(self, conditions):
+        self._A = frozenset(conditions)
+
     def y(self):
-        return self._y
+        return np.array(self._y)
 
     def class_index(self):
         return self._class_index
 
     def class_distribution(self):
-        return self._class_dist
+        return np.array(self._class_dist)
 
     def logit_score(self):
         return self._logit_score
@@ -106,6 +128,9 @@ class Rule:
     def conf(self):
         return self._conf
 
+    def weight(self):
+        return self._weight
+
     def add_condition(self, condition):
         if condition not in self._A:
             self._A.add(condition)
@@ -116,11 +141,17 @@ class Rule:
         self._supp = supp
 
     def __init__(self, conditions, class_dist=[0.5, 0.5], logit_score=None, y=None, y_class_index=None, n_samples=0,
-                 n_outputs=1, classes=None):
+                 n_outputs=1, classes=None, weight=0):
         self._A = conditions  # conditions
-        self._class_dist = list(class_dist)
+        if isinstance(class_dist, np.ndarray):
+            self._class_dist = class_dist.tolist()
+        else:
+            self._class_dist = class_dist
         self._logit_score = logit_score
-        self._y = list(y)
+        if isinstance(y, np.ndarray):
+            self._y = y.tolist()
+        else:
+            self._y = y
         self._class_index = y_class_index
         self._n_samples = n_samples
         self._n_outputs = n_outputs
@@ -128,9 +159,13 @@ class Rule:
         self._cov = 0
         self._supp = 0
         self._conf = 0
+        self._weight = weight
 
     def __str__(self):
-        return_string = ' ˄ '.join(map(str, self._A))
+        if len(self._A) == 0:
+            return_string = '( )'
+        else:
+            return_string = ' ˄ '.join(map(str, self._A))
         return_string += ' → ' + str(self._y)
         return return_string
 

@@ -2,6 +2,9 @@ import json
 
 import numpy as np
 import copy
+import operator
+from tempfile import TemporaryDirectory
+from os import path
 
 from abc import ABCMeta
 from abc import abstractmethod
@@ -14,7 +17,7 @@ from lightgbm import LGBMClassifier, LGBMRegressor
 from catboost import CatBoostClassifier, CatBoostRegressor
 
 from rulecosi import helpers
-from rulecosi.rules import RuleSet, Condition, Rule, Operator
+from rulecosi.rules import RuleSet, Condition, Rule
 
 
 class BaseRuleExtractor(metaclass=ABCMeta):
@@ -109,8 +112,8 @@ class BaseRuleExtractor(metaclass=ABCMeta):
         return rules
 
     def get_split_operators(self):
-        op_left = Operator.LESS_OR_EQUAL_THAN
-        op_right = Operator.GREATER_THAN
+        op_left = operator.le  # Operator.LESS_OR_EQUAL_THAN
+        op_right = operator.gt  # Operator.GREATER_THAN
         return op_left, op_right
 
 
@@ -137,8 +140,9 @@ class ClassifierRuleExtractor(BaseRuleExtractor):
         else:
             weight = None
         class_dist = (value[node_index] / value[node_index].sum()).reshape((len(self.classes_),))
-        y_class_index = np.argmax(class_dist).item()
-        y = [self.classes_[y_class_index]]
+        # predict y_class_index = np.argmax(class_dist).item()
+        y_class_index = np.argmax(class_dist)
+        y = np.array([self.classes_[y_class_index]])
 
         return Rule(frozenset(condition_set), class_dist=class_dist, logit_score=logit_score, y=y,
                     y_class_index=y_class_index, n_samples=n_samples[node_index], classes=self.classes_,
@@ -176,7 +180,7 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         else:
             class_dist = logit_score - logsumexp(logit_score)
         y_class_index = np.argmax(class_dist).item()
-        y = [self.classes_[y_class_index]]
+        y = np.array([self.classes_[y_class_index]])
 
         return Rule(frozenset(condition_set), class_dist=class_dist, logit_score=logit_score, y=y,
                     y_class_index=y_class_index, n_samples=n_samples[node_index], classes=self.classes_,
@@ -228,12 +232,15 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
             self._populate_tree_dict(tree['children'][1], tree_dict)
 
     def get_split_operators(self):
-        op_left = Operator.LESS_THAN
-        op_right = Operator.GREATER_OR_EQUAL_THAN
+        op_left = operator.lt  # Operator.LESS_THAN
+        op_right = operator.ge  # Operator.GREATER_OR_EQUAL_THAN
         return op_left, op_right
 
     def _get_gbm_init(self):
-        return self._ensemble.base_score
+        if self._ensemble.base_score is None:
+            return 0.5
+        else:
+            return self._ensemble.base_score
 
 
 class LGBMClassifierExtractor(GBMClassifierRuleExtractor):
@@ -299,8 +306,9 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
     def extract_rules(self):
         rulesets = []
         global_condition_map = dict()
-        self._ensemble.save_model('cat_trees', format='json')
-        cat_model = json.load(open('cat_trees', encoding='utf8'))
+        with TemporaryDirectory() as tmp_dir_name:
+            self._ensemble.save_model(path.join(tmp_dir_name, 'cat_tree.json'), format='json')
+            cat_model = json.load(open(path.join(tmp_dir_name, 'cat_tree.json'), encoding='utf8'))
         cat_tree_dicts = cat_model['oblivious_trees']
         for tree_index, cat_tree_dict in enumerate(cat_tree_dicts):
             tree_depth = len(cat_tree_dict['splits'])

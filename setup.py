@@ -20,7 +20,7 @@ MAINTAINER_EMAIL = 'jobregon@khu.ac.kr'
 URL = 'http://josue-obregon.com/'
 LICENSE = 'new BSD'
 DOWNLOAD_URL = 'https://github.com/jobregon1212/rulecosi'
-VERSION = __version__
+VERSION = 0.1
 INSTALL_REQUIRES = ['numpy', 'scipy', 'scikit-learn']
 CLASSIFIERS = ['Intended Audience :: Science/Research',
                'Intended Audience :: Developers',

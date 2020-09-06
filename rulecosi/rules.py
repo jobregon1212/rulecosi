@@ -1,5 +1,9 @@
-from enum import Enum
 import numpy as np
+import operator
+from functools import reduce
+
+from sklearn.metrics import f1_score, accuracy_score
+from imblearn.metrics import geometric_mean_score
 
 
 class RuleSet:
@@ -9,15 +13,27 @@ class RuleSet:
         self._condition_map = ruleset.get_condition_map()
         self.n_total_ant = ruleset.n_total_ant
         self.n_uniq_ant = ruleset.n_uniq_ant
+        self.geometric_mean_score = 0
+        self.f1_score = 0
+        self.accuracy_score = 0
 
     def __init__(self, rules=[], condition_map={}):
         self._rules = rules
         self._condition_map = condition_map
         self.n_total_ant = 0
         self.n_uniq_ant = 0
+        self.geometric_mean_score = 0
+        self.f1_score = 0
+        self.accuracy_score = 0
 
     def set_condition_map(self, condition_map):
         self._condition_map = condition_map
+
+    def prune_condition_map(self):
+        condition_set = {cond
+                         for rule in self._rules
+                         for cond in rule.A()}
+        self._condition_map = {key: self._condition_map[key] for key in condition_set}
 
     def get_condition_map(self):
         return self._condition_map
@@ -54,40 +70,69 @@ class RuleSet:
         return iter(self._rules)
 
     def compute_interpretability_measures(self):
+        self.prune_condition_map()
         n_uniq_ant = len(self._condition_map)
         n_total_ant = 0
         for rule in self._rules:
-            n_total_ant += len(rule._A)
-        return len(self._rules), n_uniq_ant / n_total_ant
+            n_total_ant += len(rule.A())
+        return len(self._rules), n_uniq_ant, n_total_ant
+
+    def compute_classification_performance(self, X, y_true):
+        y_pred = self.predict(X)
+        self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
+        self.f1_score = f1_score(y_true, y_pred)
+        self.accuracy_score = accuracy_score(y_true, y_pred)
 
     def predict(self, X):
-        return np.array([self.predict_single(row) for row in X])
+        return self._predict(X)[0]
 
     def predict_proba(self, X):
-        return np.array([self.predict_single(row,proba=True) for row in X])
+        return self._predict(X, proba=True)[0]
 
-    def predict_single(self, X, proba=False):
-        for rule in self._rules:
-            if rule.covers(X, self._condition_map):
-                if proba:
-                    return rule.class_distribution()
-                else:
-                    return rule.y()[0]
+    def _predict(self, X, proba=False):
         if proba:
-            return self._rules[0].class_distribution()
+            prediction = np.zeros((X.shape[0], self._rules[0].class_distribution().shape[0]))
         else:
-            return self._rules[0].y()[0]
+            prediction = np.zeros((X.shape[0], self._rules[0].y().shape[0]))
+
+        covered_mask = np.zeros((X.shape[0],), dtype=bool)  # records the records that are already covered by some rule
+        for i, rule in enumerate(self._rules):
+            r_pred, r_mask = rule.predict(X, condition_map=self._condition_map, proba=proba)
+            # update the covered_mask with the records covered by this rule
+            remaining_covered_mask = ~covered_mask & r_mask
+            # and then update the predictions of the remaining uncovered cases with the covered records of this rule
+            prediction[remaining_covered_mask] = r_pred[remaining_covered_mask]
+            covered_mask = covered_mask | r_mask
+
+        return prediction, covered_mask
 
 
 class Rule:
 
-    def covers(self, instance, condition_map):
+    # def covers(self, X):
+    #     if len(self._A) == 0:  # default rule
+    #         return True
+    #     return reduce(operator.and_, [cond.satisfies_array(X) for cond in self._A])
+
+    def predict(self, X, condition_map, proba=False):
         if len(self._A) == 0:  # default rule
-            return True
-        for cond in [condition_map[c] for c in self._A]:
-            if not cond.satisfies(instance[cond.attribute_index()]):
-                return False
-        return True
+            # if there is no conditions in the rule, all the records satisfy and
+            # an array of predicted class or class distribution for this rule is returned
+            if proba:
+                return np.tile(self._class_dist, (X.shape[0], self._class_dist.shape[0])), \
+                       np.ones((X.shape[0]), dtype=bool)
+            else:
+                return np.tile(self._y, (X.shape[0], self._y.shape[0])), \
+                       np.ones((X.shape[0]), dtype=bool)
+        # apply the and operator to all satifies_array functions of the conditions of this rule
+        mask = reduce(operator.and_, [condition_map[cond].satisfies_array(X) for cond in self._A])
+        if proba:
+            prediction = np.zeros((X.shape[0],self._class_dist.shape[0]))
+            prediction[mask] = self._class_dist
+        else:
+            prediction = np.zeros((X.shape[0], self._y.shape[0]))
+            prediction[mask] = self._y
+        return prediction, mask
 
     def get_condition(self, att_index):
         for cond in self._A:
@@ -105,13 +150,13 @@ class Rule:
         self._A = frozenset(conditions)
 
     def y(self):
-        return np.array(self._y)
+        return self._y
 
     def class_index(self):
         return self._class_index
 
     def class_distribution(self):
-        return np.array(self._class_dist)
+        return self._class_dist
 
     def logit_score(self):
         return self._logit_score
@@ -140,18 +185,14 @@ class Rule:
         self._conf = conf
         self._supp = supp
 
-    def __init__(self, conditions, class_dist=[0.5, 0.5], logit_score=None, y=None, y_class_index=None, n_samples=0,
+    def __init__(self, conditions, class_dist=None, logit_score=None, y=None, y_class_index=None, n_samples=0,
                  n_outputs=1, classes=None, weight=0):
+        if class_dist is None:
+            class_dist = np.array([0.5, 0.5])
         self._A = conditions  # conditions
-        if isinstance(class_dist, np.ndarray):
-            self._class_dist = class_dist.tolist()
-        else:
-            self._class_dist = class_dist
+        self._class_dist = class_dist
         self._logit_score = logit_score
-        if isinstance(y, np.ndarray):
-            self._y = y.tolist()
-        else:
-            self._y = y
+        self._y = y
         self._class_index = y_class_index
         self._n_samples = n_samples
         self._n_outputs = n_outputs
@@ -186,53 +227,51 @@ class Rule:
         return hash((self._A, tuple(self._y)))
 
 
-class Operator(Enum):
-    EQUAL_TO = '='
-    GREATER_THAN = '>'
-    LESS_THAN = '<'
-    GREATER_OR_EQUAL_THAN = '≥'
-    LESS_OR_EQUAL_THAN = '≤'
-    DIFFERENT_THAN = '!='
+# class Operator(Enum):
+#     EQUAL_TO = '='
+#     GREATER_THAN = '>'
+#     LESS_THAN = '<'
+#     GREATER_OR_EQUAL_THAN = '≥'
+#     LESS_OR_EQUAL_THAN = '≤'
+#     DIFFERENT_THAN = '!='
+
+op_dict = {'eq': '=',
+           'gt': '>',
+           'lt': '<',
+           'ge': '≥',
+           'le': '≤',
+           'ne': '!='}
 
 
 class Condition:
-
     def satisfies(self, value):
-        if self._operator == Operator.EQUAL_TO:
-            return value == self._value
-        if self._operator == Operator.GREATER_THAN:
-            return value > self._value
-        if self._operator == Operator.LESS_THAN:
-            return value < self._value
-        if self._operator == Operator.GREATER_OR_EQUAL_THAN:
-            return value >= self._value
-        if self._operator == Operator.LESS_OR_EQUAL_THAN:
-            return value <= self._value
-        if self._operator == Operator.DIFFERENT_THAN:
-            return value != self._value
+        return self._op(value, self._value)
+
+    def satisfies_array(self, arr):
+        # apply the operator to the values in arr of the column equal to the index of the attribute of this condition
+        # and returns an array of bool
+        return self._op(arr[:, self._att_index], self._value)
 
     def attribute_index(self):
-        # return str(self._att_index) + str(ord(self._operator)) + str(self._value)
         return self._att_index
 
     def operator(self):
-        return self._operator
+        return self._op
 
     def value(self):
         return self._value
 
-    def __init__(self, att_index, operator, value, att_name=None):
+    def __init__(self, att_index, _op, _value, att_name=None):
         self._att_index = int(att_index)
         if att_name is None:
             self._att_name = 'att_' + str(att_index)
         else:
             self._att_name = att_name
-        self._operator = operator
-        self._value = float(value)
+        self._op = _op
+        self._value = float(_value)
 
     def __str__(self):
-        # return '(' + self._att_name+' ' + self._operator.value + ' ' + str(self._value) + ')'
-        return '({} {} {:.3f})'.format(self._att_name, self._operator.value, self._value)
+        return '({} {} {:.3f})'.format(self._att_name, op_dict[self._op.__name__], self._value)
 
     def __repr__(self):
         return str(self)
@@ -244,10 +283,11 @@ class Condition:
                 return True
             if self._att_index != other._att_index:
                 return False
-            if self._operator != other._operator:
+            if self._op != other._op:
                 return False
             return self._value == other._value
         return False
 
     def __hash__(self):
-        return hash((self._att_index, self._operator, self._value))
+        return hash((self._att_index, self._op, self._value))
+

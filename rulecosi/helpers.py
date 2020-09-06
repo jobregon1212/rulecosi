@@ -23,7 +23,7 @@ def remove_duplicated_rules(list_of_rulesets, weights=None):
     for idx, ruleset in enumerate(list_of_rulesets):
         filtered_rules = [x for x in ruleset if not not_exists_add(x, x_set)]
         if len(filtered_rules) > 0:
-            new_list_rulesets.append(RuleSet(filtered_rules, ruleset.get_condition_map()))
+            new_list_rulesets.append(RuleSet(filtered_rules, ruleset.condition_map))
             if weights is not None:
                 new_weights.append(weights[idx])
     return new_list_rulesets, new_weights, x_set
@@ -67,8 +67,8 @@ def list_or_operation(list_):
 def count_rules_conds(ruleset):
     total_cond = 0
     for rule in ruleset:
-        total_cond += len(rule.A())
-    return len(ruleset), total_cond
+        total_cond += len(rule.A)
+    return len(ruleset.rules), total_cond
 
 
 # https://stackoverflow.com/questions/54699105/how-to-count-the-number-of-occurrences-of-a-nested-dictionary-key

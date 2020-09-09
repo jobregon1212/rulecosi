@@ -143,7 +143,8 @@ class ClassifierRuleExtractor(BaseRuleExtractor):
         # predict y_class_index = np.argmax(class_dist).item()
         y_class_index = np.argmax(class_dist)
         y = np.array([self.classes_[y_class_index]])
-
+        if not isinstance(class_dist, np.ndarray):
+            stop=[]
         return Rule(frozenset(condition_set), class_dist=class_dist, logit_score=logit_score, y=y,
                     y_class_index=y_class_index, n_samples=n_samples[node_index], classes=self.classes_,
                     weight=weight)
@@ -176,18 +177,20 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         logit_score = init + value[node_index]
         raw_to_proba = expit(logit_score)
         if len(self.classes_) == 2:
-            class_dist = np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
+            class_dist = self._get_class_dist(raw_to_proba)
         else:
             class_dist = logit_score - logsumexp(logit_score)
         y_class_index = np.argmax(class_dist).item()
         y = np.array([self.classes_[y_class_index]])
-
         return Rule(frozenset(condition_set), class_dist=class_dist, logit_score=logit_score, y=y,
                     y_class_index=y_class_index, n_samples=n_samples[node_index], classes=self.classes_,
                     weight=weights)
 
     def _get_gbm_init(self):
         return self._ensemble._raw_predict_init(self.X_[0].reshape(1, -1))
+
+    def _get_class_dist(self, raw_to_proba):
+        return np.array([1 - raw_to_proba.item(), raw_to_proba.item()])
 
 
 class XGBClassifierExtractor(GBMClassifierRuleExtractor):
@@ -204,6 +207,9 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
             rulesets.append(original_ruleset)
             global_condition_map.update(original_ruleset.condition_map)
         return rulesets, global_condition_map
+
+    def _get_class_dist(self, raw_to_proba):
+        return np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
 
     def get_tree_dict(self, base_tree, n_nodes=0):
         tree_dict = {'children_left': np.full(n_nodes, fill_value=-1),
@@ -259,6 +265,9 @@ class LGBMClassifierExtractor(GBMClassifierRuleExtractor):
             rulesets.append(original_ruleset)
             global_condition_map.update(original_ruleset.condition_map)
         return rulesets, global_condition_map
+
+    def _get_class_dist(self, raw_to_proba):
+        return np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
 
     def get_tree_dict(self, base_tree, n_nodes=0):
 
@@ -316,9 +325,14 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
             original_ruleset = self.get_base_ruleset(self.get_tree_dict(cat_tree_dict, n_nodes),
                                                      class_index=0, tree_index=tree_index)
+            # remove rules with logit_score = 0
+            original_ruleset.rules[:] = [rule for rule in original_ruleset.rules if rule.logit_score != 0]
             rulesets.append(original_ruleset)
             global_condition_map.update(original_ruleset.condition_map)
         return rulesets, global_condition_map
+
+    def _get_class_dist(self, raw_to_proba):
+        return np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
 
     def get_tree_dict(self, base_tree, n_nodes=0):
 

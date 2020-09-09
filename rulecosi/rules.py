@@ -2,20 +2,22 @@ import numpy as np
 import operator
 from functools import reduce
 
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from imblearn.metrics import geometric_mean_score
+from sklearn.utils import check_array
 
 
 class RuleSet:
 
     def __init__(self, ruleset):
-        self.rules = ruleset.get_rule_list()
-        self.condition_map = ruleset.get_condition_map()
+        self.rules = ruleset.rules
+        self.condition_map = ruleset.condition_map
         self.n_total_ant = ruleset.n_total_ant
         self.n_uniq_ant = ruleset.n_uniq_ant
         self.geometric_mean_score = 0
         self.f1_score = 0
         self.accuracy_score = 0
+        self.roc_auc = 0
 
     def __init__(self, rules=[], condition_map={}):
         self.rules = rules
@@ -25,6 +27,7 @@ class RuleSet:
         self.geometric_mean_score = 0
         self.f1_score = 0
         self.accuracy_score = 0
+        self.roc_auc = 0
 
     # def set_condition_map(self, condition_map):
     #     self.condition_map = condition_map
@@ -32,7 +35,7 @@ class RuleSet:
     def prune_condition_map(self):
         condition_set = {cond
                          for rule in self.rules
-                         for cond in rule.A()}
+                         for cond in rule.A}
         self.condition_map = {key: self.condition_map[key] for key in condition_set}
 
     # def get_condition_map(self):
@@ -74,14 +77,41 @@ class RuleSet:
         n_uniq_ant = len(self.condition_map)
         n_total_ant = 0
         for rule in self.rules:
-            n_total_ant += len(rule.A())
+            n_total_ant += len(rule.A)
         return len(self.rules), n_uniq_ant, n_total_ant
 
-    def compute_classification_performance(self, X, y_true):
+    def compute_classification_performance(self, X, y_true, metric='gmean'):
+        if metric == 'roc_auc':
+            y_score = self.predict_proba(X)
+            self.roc_auc = roc_auc_score(y_true, y_score[:, 1])
+        else:
+            y_pred = self.predict(X)
+            if metric == 'gmean':
+                self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
+            elif metric == 'f1':
+                self.f1_score = f1_score(y_true, y_pred)
+            else:
+                self.accuracy_score = accuracy_score(y_true, y_pred)
+
+    def metric(self, metric='gmean'):
+        if metric == 'gmean':
+            return self.geometric_mean_score
+        elif metric == 'f1':
+            return self.f1_score
+        elif metric == 'roc_auc':
+            return self.roc_auc
+        else:
+            return self.accuracy_score
+
+    def compute_all_classification_performance(self, X, y_true):
+        X = check_array(X)
+        #y_true = check_array(y_true.reshape(1, -1))
         y_pred = self.predict(X)
+        y_score = self.predict_proba(X)
         self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
         self.f1_score = f1_score(y_true, y_pred)
         self.accuracy_score = accuracy_score(y_true, y_pred)
+        self.roc_auc = roc_auc_score(y_true, y_score[:, 1])
 
     def predict(self, X):
         return np.ravel(self._predict(X)[0])
@@ -91,9 +121,11 @@ class RuleSet:
 
     def _predict(self, X, proba=False):
         if proba:
-            prediction = np.empty((X.shape[0], self.rules[0].class_dist.shape[0]))#np.zeros((X.shape[0], self.rules[0].class_dist.shape[0]))
+            if not isinstance(self.rules[0].class_dist, np.ndarray):
+                stop = []
+            prediction = np.empty((X.shape[0], self.rules[0].class_dist.shape[0]))
         else:
-            prediction = np.empty((X.shape[0], self.rules[0].y.shape[0]))#np.zeros((X.shape[0], self.rules[0].y.shape[0]))
+            prediction = np.empty((X.shape[0], self.rules[0].y.shape[0]), dtype=self.rules[0].y.dtype)
 
         covered_mask = np.zeros((X.shape[0],), dtype=bool)  # records the records that are already covered by some rule
         for i, rule in enumerate(self.rules):
@@ -103,6 +135,8 @@ class RuleSet:
             # and then update the predictions of the remaining uncovered cases with the covered records of this rule
             prediction[remaining_covered_mask] = r_pred[remaining_covered_mask]
             covered_mask = covered_mask | r_mask
+            if covered_mask.sum() == X.shape[0]:
+                break
 
         return prediction, covered_mask
 
@@ -115,18 +149,11 @@ class Rule:
     #     return reduce(operator.and_, [cond.satisfies_array(X) for cond in self._A])
 
     def predict(self, X, condition_map, proba=False):
-        if len(self.A) == 0:  # default rule
-            # if there is no conditions in the rule, all the records satisfy and
-            # an array of predicted class or class distribution for this rule is returned
-            if proba:
-                return np.tile(self.class_dist, (X.shape[0], self.class_dist.shape[0])), \
-                       np.ones((X.shape[0]), dtype=bool)
-            else:
-                return np.tile(self.y, (X.shape[0], self.y.shape[0])), \
-                       np.ones((X.shape[0]), dtype=bool)
-        # apply the and operator to all satifies_array functions of the conditions of this rule
+        mask = np.ones((X.shape[0]), dtype=bool)
 
-        mask = reduce(operator.and_, [condition_map[cond].satisfies_array(X) for cond in self.A])
+        # apply the and operator to all "satisfies _array" functions of the conditions of this rule
+        if len(self.A) > 0:
+            mask = reduce(operator.and_, [condition_map[cond].satisfies_array(X) for cond in self.A])
         if proba:
             prediction = np.zeros((X.shape[0], self.class_dist.shape[0]))
             prediction[mask] = self.class_dist
@@ -291,4 +318,3 @@ class Condition:
 
     def __hash__(self):
         return hash((self.att_index, self.op, self.value))
-

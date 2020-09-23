@@ -26,7 +26,7 @@ from math import sqrt
 from rulecosi.rules import Rule, RuleSet
 from scipy.special import expit, logsumexp
 import rulecosi.helpers as helpers
-from rulecosi._rule_extraction import get_rule_extractor
+from rulecosi.rule_extraction import get_rule_extractor
 
 
 def _ensemble_type(ensemble):
@@ -96,9 +96,12 @@ class BaseRuleCOSI(BaseEstimator):
         self.X_ = None
         self.y_ = None
 
+        self.original_X_ = None
+        self.original_y_ = None
+
         self.original_rulesets = None
         self.simplified_ruleset = None
-        self._baseline_rulesets = None
+        # self._baseline_rulesets = None
 
         self._global_condition_map = None
         self._cond_cov_dict = None
@@ -165,10 +168,10 @@ class BaseRuleCOSI(BaseEstimator):
                 self._weights = None
 
         # Then the duplicated rules are removed
-        processed_rulesets, self._weights, _ = helpers.remove_duplicated_rules(processed_rulesets,
-                                                                               self._weights)
+        # processed_rulesets, self._weights, _ = helpers.remove_duplicated_rules(processed_rulesets,
+        #                                                                        self._weights)
 
-        self._baseline_rulesets = processed_rulesets
+        # self._baseline_rulesets = processed_rulesets
 
         self._initialize_sets()
         self.simplified_ruleset = processed_rulesets[0]
@@ -185,6 +188,8 @@ class BaseRuleCOSI(BaseEstimator):
         else:
             early_stop = len(self.simplified_ruleset)
 
+        self.original_X_ = np.copy(self.X_)
+        self.original_y_ = np.copy(self.y_)
         for i in range(1, len(processed_rulesets)):
             # combine the rules
             combined_rules = self._combine_rulesets(self.simplified_ruleset, processed_rulesets[i])
@@ -198,8 +203,8 @@ class BaseRuleCOSI(BaseEstimator):
             self._simplify_rulesets(combined_rules)
             if len(combined_rules.rules) == 0:
                 continue
-            #print('Iteration {} simplified rules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules),self._n_combinations))
             self.simplified_ruleset = self._evaluate_combinations(self.simplified_ruleset, combined_rules)
+            #print('Iteration {} simplified rules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules),self._n_combinations))
             if self._early_stop_cnt >= early_stop:
                 break
 
@@ -370,9 +375,8 @@ class BaseRuleCOSI(BaseEstimator):
                     new_rule.supp = new_rule_conf_supp[y_class_index][1]
 
                     if new_rule.cov > self.cov_threshold and \
-                            new_rule.cov != 1 and \
-                            new_rule.conf > self.conf_threshold and \
-                            len(new_rule.A) <= self.rule_max_depth:
+                            new_rule.conf > self.conf_threshold: #and \
+                            #len(new_rule.A) <= self.rule_max_depth:
                         combined_rules.add(new_rule)
                         self._good_combinations[new_rule] = [new_rule_cov,
                                                              new_rule_conf_supp[y_class_index][0],
@@ -618,8 +622,8 @@ class BaseRuleCOSI(BaseEstimator):
             self._early_stop_cnt = 0
             return combined_rules
         else:
-            #print('winner {} simplified rules {}'.format(self.metric, simplified_ruleset.metric(self.metric)))
             self._early_stop_cnt += 1
+            #print('early_stop_counter = {}. Winner {} simplified rules {}'.format(self._early_stop_cnt, self.metric, simplified_ruleset.metric(self.metric)))
             return simplified_ruleset
 
     def _get_gbm_init(self):
@@ -688,49 +692,49 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         X = check_array(X)
         return self.simplified_ruleset.predict_proba(X)
 
-    def predict_baseline(self, X, proba=False):
-        check_is_fitted(self, ['X_', 'y_'])
-
-        # Input validation
-        X = check_array(X)
-        if proba:
-            return np.array([self.predict_baseline_single(row, proba=True) for row in X])
-        else:
-            return np.array([self.predict_baseline_single(row) for row in X])
-
-    def predict_baseline_single(self, X, proba=False):
-        avg_class_dist = self._baseline_rulesets[0].get_rule_list()[0].class_dist * 0
-        sum_leaf_score = None
-        if self._base_ens_type == 'gradient_classifier':
-            sum_leaf_score = self._get_gbm_init()
-        for idx, ruleset in enumerate(self._baseline_rulesets):
-            for rule in ruleset:
-                if rule.covers(X, ruleset.get_condition_map()):
-                    if self._base_ens_type == 'classifier':
-                        if self._weights is None:
-                            avg_class_dist = np.mean([avg_class_dist, rule.class_dist],
-                                                     axis=0).reshape((len(self.classes_),))
-                    elif self._base_ens_type == 'gradient_classifier':
-                        sum_leaf_score = rule.logit_score + sum_leaf_score
-                    if proba:
-                        return rule.class_dist
-                    else:
-                        return rule.y[0]
-        if self._base_ens_type == 'classifier':
-            y_class_index = np.argmax(avg_class_dist).item()
-            y = [self.classes_[y_class_index]]
-        elif self._base_ens_type == 'gradient_classifier':
-            if len(self.classes_) == 2:
-                raw_to_proba = expit(sum_leaf_score)
-                avg_class_dist = np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
-            else:
-                avg_class_dist = sum_leaf_score - logsumexp(sum_leaf_score)
-            y_class_index = np.argmax(avg_class_dist).item()
-            y = [self.classes_[y_class_index]]
-        if proba:
-            return avg_class_dist
-        else:
-            return y
+    # def predict_baseline(self, X, proba=False):
+    #     check_is_fitted(self, ['X_', 'y_'])
+    #
+    #     # Input validation
+    #     X = check_array(X)
+    #     if proba:
+    #         return np.array([self.predict_baseline_single(row, proba=True) for row in X])
+    #     else:
+    #         return np.array([self.predict_baseline_single(row) for row in X])
+    #
+    # def predict_baseline_single(self, X, proba=False):
+    #     avg_class_dist = self._baseline_rulesets[0].get_rule_list()[0].class_dist * 0
+    #     sum_leaf_score = None
+    #     if self._base_ens_type == 'gradient_classifier':
+    #         sum_leaf_score = self._get_gbm_init()
+    #     for idx, ruleset in enumerate(self._baseline_rulesets):
+    #         for rule in ruleset:
+    #             if rule.covers(X, ruleset.get_condition_map()):
+    #                 if self._base_ens_type == 'classifier':
+    #                     if self._weights is None:
+    #                         avg_class_dist = np.mean([avg_class_dist, rule.class_dist],
+    #                                                  axis=0).reshape((len(self.classes_),))
+    #                 elif self._base_ens_type == 'gradient_classifier':
+    #                     sum_leaf_score = rule.logit_score + sum_leaf_score
+    #                 if proba:
+    #                     return rule.class_dist
+    #                 else:
+    #                     return rule.y[0]
+    #     if self._base_ens_type == 'classifier':
+    #         y_class_index = np.argmax(avg_class_dist).item()
+    #         y = [self.classes_[y_class_index]]
+    #     elif self._base_ens_type == 'gradient_classifier':
+    #         if len(self.classes_) == 2:
+    #             raw_to_proba = expit(sum_leaf_score)
+    #             avg_class_dist = np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
+    #         else:
+    #             avg_class_dist = sum_leaf_score - logsumexp(sum_leaf_score)
+    #         y_class_index = np.argmax(avg_class_dist).item()
+    #         y = [self.classes_[y_class_index]]
+    #     if proba:
+    #         return avg_class_dist
+    #     else:
+    #         return y
 
 
 class RuleCOSIRegressor(RegressorMixin, BaseRuleCOSI):

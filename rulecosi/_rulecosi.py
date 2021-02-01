@@ -71,6 +71,7 @@ class BaseRuleCOSI(BaseEstimator):
                  rule_max_depth=10,
                  cov_threshold=0.0,
                  conf_threshold=0.5,
+                 min_samples=1,
                  rule_order='cov',
                  early_stop=0.30,
                  metric='gmean',
@@ -83,6 +84,7 @@ class BaseRuleCOSI(BaseEstimator):
         self.rule_max_depth = rule_max_depth
         self.cov_threshold = cov_threshold
         self.conf_threshold = conf_threshold
+        self.min_samples = min_samples
         self.rule_order = rule_order
         self.early_stop = early_stop
         self.metric = metric
@@ -185,8 +187,10 @@ class BaseRuleCOSI(BaseEstimator):
         self._early_stop_cnt = 0
         if self.early_stop > 0:
             early_stop = int(len(processed_rulesets) * self.early_stop)
+            # print(early_stop)
         else:
-            early_stop = len(self.simplified_ruleset)
+            early_stop = len(processed_rulesets)
+            # print(early_stop)
 
         self.original_X_ = np.copy(self.X_)
         self.original_y_ = np.copy(self.y_)
@@ -194,20 +198,25 @@ class BaseRuleCOSI(BaseEstimator):
             # combine the rules
             combined_rules = self._combine_rulesets(self.simplified_ruleset, processed_rulesets[i])
             # order by rule confidence
-            self._sort_ruleset(combined_rules)
+            # self._sort_ruleset(combined_rules)
             # prune inaccurate rules
-            #print('Iteration {} - combinedrules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules),self._n_combinations))
-            self._compute_rule_measures(combined_rules, sequential_coverage=True)
-            #print('Iteration {} - pruned rules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules), self._n_combinations))
+            # print('Iteration {} - combinedrules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules),self._n_combinations))
+            # self._compute_rule_measures(combined_rules, sequential_coverage=True)
+            self._sequential_covering(combined_rules)
+            # print('Iteration {} - pruned rules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules), self._n_combinations))
             # optimize rules
             self._simplify_rulesets(combined_rules)
             if len(combined_rules.rules) == 0:
                 continue
             self.simplified_ruleset = self._evaluate_combinations(self.simplified_ruleset, combined_rules)
-            #print('Iteration {} simplified rules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules),self._n_combinations))
+            # print('Iteration {} simplified rules: {} -- {} combinations'.format(i, helpers.count_rules_conds(combined_rules),self._n_combinations))
             if self._early_stop_cnt >= early_stop:
                 break
+            if self.simplified_ruleset.metric() == 1:
+                break
 
+        #self._simplify_rulesets(self.simplified_ruleset)
+        #self._sequential_covering(self.simplified_ruleset)
         self._add_default_rule(self.simplified_ruleset)
         end_time = time.time()
         self._combination_time = end_time - start_time
@@ -284,9 +293,10 @@ class BaseRuleCOSI(BaseEstimator):
 
     def _sort_ruleset(self, ruleset):
         if self.rule_order == 'cov':
-            ruleset.rules.sort(key=lambda rule: (rule.cov, len(rule.A) * -1, rule.conf), reverse=True)
+            ruleset.rules.sort(key=lambda rule: (rule.cov, rule.conf, rule.supp), reverse=True)
+
         elif self.rule_order == 'conf':
-            ruleset.rules.sort(key=lambda rule: (rule.conf, len(rule.A) * -1, rule.cov), reverse=True)
+            ruleset.rules.sort(key=lambda rule: (rule.conf, rule.cov, rule.supp), reverse=True)
 
     def _compute_condition_bit_sets(self):
         # empty sets for each condition coverage class
@@ -375,8 +385,8 @@ class BaseRuleCOSI(BaseEstimator):
                     new_rule.supp = new_rule_conf_supp[y_class_index][1]
 
                     if new_rule.cov > self.cov_threshold and \
-                            new_rule.conf > self.conf_threshold: #and \
-                            #len(new_rule.A) <= self.rule_max_depth:
+                            new_rule.conf > self.conf_threshold:  # and \
+                        # len(new_rule.A) <= self.rule_max_depth:
                         combined_rules.add(new_rule)
                         self._good_combinations[new_rule] = [new_rule_cov,
                                                              new_rule_conf_supp[y_class_index][0],
@@ -458,7 +468,6 @@ class BaseRuleCOSI(BaseEstimator):
             [conditions.remove(cond[0]) for cond in list_conds]
         return frozenset(conditions)
 
-
     def _compute_rule_measures(self, combined_rules, sequential_coverage=False):
         uncovered_instances = helpers.one_bitarray(self.X_.shape[0])
         if sequential_coverage:
@@ -472,6 +481,35 @@ class BaseRuleCOSI(BaseEstimator):
         #         stop=[]
         #     if not self._rule_is_accurate(rule, uncovered_instances):
         #         combined_rules.remove(rule)
+
+    def _compute_rule_measures2(self, ruleset, uncovered_mask=None):
+        for rule in ruleset:
+            local_uncovered_instances = copy.copy(uncovered_mask)
+            rule_cov, rule_conf_supp = self._get_conditions_measures(rule.A, uncovered_mask=local_uncovered_instances)
+            rule_conf = rule_conf_supp[rule.class_index][0]
+            rule_supp = rule_conf_supp[rule.class_index][1]
+            rule.cov = rule_cov
+            rule.conf = rule_conf
+            rule.supp = rule_supp
+
+    def _sequential_covering(self, ruleset):
+        return_ruleset = []
+        uncovered_instances = helpers.one_bitarray(self.X_.shape[0])
+        found_rule = True
+        while len(ruleset.rules) > 0 and uncovered_instances.count() > 0 and found_rule:
+            self._compute_rule_measures2(ruleset, uncovered_instances)
+            self._sort_ruleset(ruleset)
+            found_rule = False
+            for rule in ruleset:
+                if self._rule_is_accurate(rule, uncovered_instances=uncovered_instances):
+                    return_ruleset.append(rule)
+                    ruleset.rules[:] = [rule for rule in ruleset if rule != return_ruleset[-1]]
+                    found_rule = True
+                    break
+            #print(uncovered_instances.count())
+            #print(len(ruleset.rules))
+        ruleset.rules[:] = return_ruleset
+        # return return_ruleset
 
     def _rule_is_accurate(self, rule, uncovered_instances):
         if uncovered_instances.count() == 0:
@@ -514,10 +552,16 @@ class BaseRuleCOSI(BaseEstimator):
                     rule_conds.remove(min_error_tup[0])
                     rule.A = frozenset(rule_conds)
 
-        combined_rules.rules[:] = [rule for rule in combined_rules if len(rule.A) > 0]
+        min_cov = self.min_samples/self.X_.shape[0]
+        combined_rules.rules[:] = [rule for rule in combined_rules if len(rule.A) > 0 and rule.cov > min_cov]
         # combined_rules.sort(key=lambda r: (r.cov, r.conf), reverse=True)
+
+        #self._compute_rule_measures(combined_rules, sequential_coverage=False)
+        self._compute_rule_measures(combined_rules, sequential_coverage=False)
         self._sort_ruleset(combined_rules)
         self._compute_rule_measures(combined_rules, sequential_coverage=True)
+
+
 
     def _compute_pessimistic_error(self, conditions, class_index):
         if len(conditions) == 0:
@@ -618,12 +662,12 @@ class BaseRuleCOSI(BaseEstimator):
             combined_rules.rules.pop()
 
         if combined_rules.metric(self.metric) >= simplified_ruleset.metric(self.metric):
-            #print('winner {} combined rules {}'.format(self.metric, combined_rules.metric(self.metric)))
+            # print('winner {} combined rules {}'.format(self.metric, combined_rules.metric(self.metric)))
             self._early_stop_cnt = 0
             return combined_rules
         else:
             self._early_stop_cnt += 1
-            #print('early_stop_counter = {}. Winner {} simplified rules {}'.format(self._early_stop_cnt, self.metric, simplified_ruleset.metric(self.metric)))
+            # print('early_stop_counter = {}. Winner {} simplified rules {}'.format(self._early_stop_cnt, self.metric, simplified_ruleset.metric(self.metric)))
             return simplified_ruleset
 
     def _get_gbm_init(self):

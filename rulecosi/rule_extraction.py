@@ -11,11 +11,10 @@ from abc import abstractmethod
 
 from scipy.special import expit, logsumexp
 from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier, BaggingClassifier, GradientBoostingClassifier
-from sklearn.ensemble import AdaBoostRegressor, RandomForestRegressor, BaggingRegressor, GradientBoostingRegressor
 from sklearn.tree import DecisionTreeClassifier
-from xgboost import XGBClassifier, XGBRegressor
-from lightgbm import LGBMClassifier, LGBMRegressor
-from catboost import CatBoostClassifier, CatBoostRegressor
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from catboost import CatBoostClassifier
 
 from rulecosi import helpers
 from rulecosi.rules import RuleSet, Condition, Rule

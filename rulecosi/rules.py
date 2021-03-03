@@ -1,3 +1,6 @@
+
+
+
 import numpy as np
 import operator
 from functools import reduce
@@ -5,6 +8,13 @@ from functools import reduce
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from imblearn.metrics import geometric_mean_score
 from sklearn.utils import check_array
+
+op_dict = {'eq': '=',
+           'gt': '>',
+           'lt': '<',
+           'ge': '≥',
+           'le': '≤',
+           'ne': '!='}
 
 
 class RuleSet:
@@ -105,7 +115,7 @@ class RuleSet:
 
     def compute_all_classification_performance(self, X, y_true):
         X = check_array(X)
-        #y_true = check_array(y_true.reshape(1, -1))
+        # y_true = check_array(y_true.reshape(1, -1))
         y_pred = self.predict(X)
         y_score = self.predict_proba(X)
         self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
@@ -142,12 +152,6 @@ class RuleSet:
 
 
 class Rule:
-
-    # def covers(self, X):
-    #     if len(self._A) == 0:  # default rule
-    #         return True
-    #     return reduce(operator.and_, [cond.satisfies_array(X) for cond in self._A])
-
     def predict(self, X, condition_map, proba=False):
         mask = np.ones((X.shape[0]), dtype=bool)
 
@@ -168,50 +172,9 @@ class Rule:
                 return cond
         return None
 
-    # def A_(self, frozen=True):
-    #     if frozen:
-    #         return self.A
-    #     else:
-    #         return set(self.A)
-
-    # def set_A(self, conditions):
-    #     self.A = frozenset(conditions)
-
-    # def y(self):
-    #     return self.y
-    #
-    # def class_index(self):
-    #     return self.class_index
-    #
-    # def class_distribution(self):
-    #     return self.class_dist
-    #
-    # def logit_score(self):
-    #     return self.logit_score
-    #
-    # def n_samples(self):
-    #     return self.n_samples
-    #
-    # def cov(self):
-    #     return self.cov
-    #
-    # def supp(self):
-    #     return self.supp
-    #
-    # def conf(self):
-    #     return self.conf
-    #
-    # def weight(self):
-    #     return self.weight
-
     def add_condition(self, condition):
         if condition not in self.A:
             self.A.add(condition)
-
-    # def set_measures(self, cov, conf, supp):
-    #     self.cov = cov
-    #     self.conf = conf
-    #     self.supp = supp
 
     def __init__(self, conditions, class_dist=None, logit_score=None, y=None, y_class_index=None, n_samples=0,
                  n_outputs=1, classes=None, weight=0):
@@ -255,22 +218,6 @@ class Rule:
         return hash((self.A, tuple(self.y)))
 
 
-# class Operator(Enum):
-#     EQUAL_TO = '='
-#     GREATER_THAN = '>'
-#     LESS_THAN = '<'
-#     GREATER_OR_EQUAL_THAN = '≥'
-#     LESS_OR_EQUAL_THAN = '≤'
-#     DIFFERENT_THAN = '!='
-
-op_dict = {'eq': '=',
-           'gt': '>',
-           'lt': '<',
-           'ge': '≥',
-           'le': '≤',
-           'ne': '!='}
-
-
 class Condition:
     def satisfies(self, value):
         return self.op(value, self.value)
@@ -279,15 +226,6 @@ class Condition:
         # apply the operator to the values in arr of the column equal to the index of the attribute of this condition
         # and returns an array of bool
         return self.op(arr[:, self.att_index], self.value)
-
-    # def attribute_index(self):
-    #     return self._att_index
-    #
-    # def operator(self):
-    #     return self._op
-    #
-    # def value(self):
-    #     return self._value
 
     def __init__(self, att_index, op, value, att_name=None):
         self.att_index = int(att_index)

@@ -22,11 +22,7 @@ RuleCOSI - Rule extraction COmbination and SImplification from ensembles of deci
 
 .. _IAI: http://iai.khu.ac.kr/wiki/wiki.php
 
-**RuleCOSI** is an machine learning extension of scikit-learn created in the Industrial Artificial
-Intelligence (IAI_) lab in Kyung Hee University.
-
-The
+**RuleCOSI** is a machine learning package based on scikit-learn created in the Industrial Artificial
+Intelligence (IAI_) by Josue Obregon at the Kyung Hee University.
 
 
-
-*Thank you for cleanly contributing to the scikit-learn ecosystem!*

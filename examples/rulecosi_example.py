@@ -31,7 +31,7 @@ for k_fold, (train_idx, test_idx) in enumerate(cv_exps.split(X, y)):
         # rule_clf = RuleCOSIClassifier(base_ensemble=CatBoostClassifier(n_estimators=20, verbose=0, random_state=1212), random_state=1212, max_rule_depth=10, rule_order='conf')
         rule_clf = RuleCOSIClassifier(base_ensemble=BaggingClassifier(random_state=random_state),
                                       n_estimators=25, tree_max_depth=6, random_state=random_state_obj_models,
-                                      rule_order='cov', conf_threshold=0.75)
+                                      conf_threshold=0.75)
         # rule_clf = RuleCOSIClassifier(base_ensemble=XGBClassifier(random_state=random_state), n_estimators=10, tree_max_depth=2, random_state=1212, rule_max_depth=10, rule_order='conf')
 
         # rule_clf = RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(n_estimators=5), random_state=1212, max_rule_depth=10)

@@ -1,6 +1,4 @@
 
-import numpy as np
-
 from rulecosi.rules import RuleSet, Rule, Condition
 from bitarray import bitarray
 

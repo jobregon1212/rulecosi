@@ -37,6 +37,7 @@ Dependencies
 rulecosi is tested to work under Python 3.6+.
 The dependency requirements used when developing the library are:
 
+* pandas(1.1.5)
 * scipy(1.5.2)
 * numpy(1.19.1)
 * scikit-learn(0.24.1)

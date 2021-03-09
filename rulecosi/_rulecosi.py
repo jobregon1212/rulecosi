@@ -38,9 +38,6 @@ from sklearn.utils.multiclass import unique_labels
 from sklearn.ensemble import RandomForestClassifier, BaggingClassifier
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import GradientBoostingRegressor
-from xgboost import XGBClassifier
-from catboost import CatBoostClassifier
-from lightgbm import LGBMClassifier
 
 from .helpers import one_bitarray
 from rulecosi.rules import Rule, RuleSet
@@ -56,7 +53,34 @@ def _ensemble_type(ensemble):
     """
     if isinstance(ensemble, (BaggingClassifier, RandomForestClassifier)):
         return 'bagging'
-    elif isinstance(ensemble, (GradientBoostingClassifier, XGBClassifier, LGBMClassifier, CatBoostClassifier)):
+    elif isinstance(ensemble,GradientBoostingClassifier):
+        return 'gbt'
+    elif str(ensemble.__class__) == "<class 'xgboost.sklearn.XGBClassifier'>":
+        try:
+            from xgboost import XGBClassifier
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError('If you want to use '
+                                      'xgboost.sklearn.XGBClassifier '
+                                      'ensembles you should install xgboost '
+                                      'library.')
+        return 'gbt'
+    elif str(ensemble.__class__) == "<class 'lightgbm.sklearn.LGBMClassifier'>":
+        try:
+            from lightgbm import LGBMClassifier
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError('If you want to use '
+                                      'lightgbm.sklearn.LGBMClassifier '
+                                      'ensembles you should install lightgbm '
+                                      'library.')
+        return 'gbt'
+    elif str(ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
+        try:
+            from catboost import CatBoostClassifier
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError('If you want to use '
+                                      'catboost.core.CatBoostClassifier '
+                                      'ensembles you should install catboost '
+                                      'library.')
         return 'gbt'
     else:
         raise NotImplementedError
@@ -210,7 +234,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self._initialize_sets()
         self.simplified_ruleset_ = processed_rulesets[0]
         self._rule_heuristics.compute_rule_heuristics(self.simplified_ruleset_)
-        if isinstance(self.base_ensemble, CatBoostClassifier):
+        if str(self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
             self._add_default_rule(self.simplified_ruleset_)
             self.simplified_ruleset_.compute_classification_performance(self.X_, self.y_)
             self.simplified_ruleset_.rules.pop()
@@ -290,7 +314,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
             else:
                 raise ValueError("You should choose an original classifier/regressor ensemble to use RuleCOSI method.")
         self.base_ensemble.n_estimators = self.n_estimators
-        if isinstance(self.base_ensemble, CatBoostClassifier):
+        if str(self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
             self.base_ensemble.set_params(n_estimators=self.n_estimators, depth=self.tree_max_depth)
         elif isinstance(self.base_ensemble, BaggingClassifier):
             if is_classifier(self):
@@ -705,17 +729,18 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                 elif self._base_ens_type == 'regressor':
                     y = np.mean([r1.y, r2.y], axis=0)
 
-
-                if isinstance(self.base_ensemble, CatBoostClassifier):
+                if str(self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
                     self._remove_opposite_conditions(r1_AUr2_A, y_class_index)
 
                 new_rule = Rule(frozenset(r1_AUr2_A), class_dist=class_dist, logit_score=logit_score, y=y,
                                 y_class_index=y_class_index, classes=self.classes_, weight=weight)
 
-                # check if the combination was null before, if it was we just skip it
+                # check if the combination was null before, if it was we just
+                # skip it
                 if new_rule in self._bad_combinations:
                     continue
-                # if the combination was a good one before, we just add the combination to the rules
+                # if the combination was a good one before, we just add the
+                # combination to the rules
                 if new_rule in self._good_combinations:
                     heuristics_dict = self._good_combinations[new_rule]
                     new_rule.set_heuristics(heuristics_dict)

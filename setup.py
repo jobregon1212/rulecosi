@@ -12,7 +12,8 @@ with open(ver_file) as f:
     exec(f.read())
 
 DISTNAME = 'rulecosi'
-DESCRIPTION = 'A machine learning algorithm to combine and simplify rules from ensembles of decision trees.'
+DESCRIPTION = 'A machine learning algorithm to combine and simplify rules ' \
+              'from ensembles of decision trees. '
 with codecs.open('README.rst', encoding='utf-8-sig') as f:
     LONG_DESCRIPTION = f.read()
 MAINTAINER = 'J. Obregon'
@@ -20,8 +21,9 @@ MAINTAINER_EMAIL = 'jobregon@khu.ac.kr'
 URL = 'http://josue-obregon.com/'
 LICENSE = 'new BSD'
 DOWNLOAD_URL = 'https://github.com/jobregon1212/rulecosi'
-VERSION = 0.1
-INSTALL_REQUIRES = ['numpy', 'scipy', 'scikit-learn']
+VERSION = '0.0.1'
+INSTALL_REQUIRES = ['pandas', 'numpy', 'scipy', 'scikit-learn',
+                    'imbalanced-learn', 'bitarray']
 CLASSIFIERS = ['Intended Audience :: Science/Research',
                'Intended Audience :: Developers',
                'License :: OSI Approved',
@@ -44,7 +46,10 @@ EXTRAS_REQUIRE = {
         'sphinx_rtd_theme',
         'numpydoc',
         'matplotlib'
-    ]
+    ],
+    'xgboost':['xgboost'],
+    'lightgbm':['lightgbm'],
+    'catboost':['catboost'],
 }
 
 setup(name=DISTNAME,

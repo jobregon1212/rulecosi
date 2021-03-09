@@ -40,12 +40,9 @@ import numpy as np
 from tempfile import TemporaryDirectory
 
 from scipy.special import expit, logsumexp
-from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier, \
-    BaggingClassifier, GradientBoostingClassifier
+from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
+from sklearn.ensemble import BaggingClassifier, GradientBoostingClassifier
 from sklearn.tree import DecisionTreeClassifier
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
-from catboost import CatBoostClassifier
 
 from .helpers import count_keys
 from .rules import RuleSet, Condition, Rule
@@ -861,13 +858,13 @@ class RuleExtractorFactory:
         elif isinstance(base_ensemble, GradientBoostingClassifier):
             return GBMClassifierRuleExtractor(base_ensemble, column_names,
                                               classes, X)
-        elif isinstance(base_ensemble, XGBClassifier):
+        elif str(base_ensemble.__class__) == "<class 'xgboost.sklearn.XGBClassifier'>":
             return XGBClassifierExtractor(base_ensemble, column_names, classes,
                                           X)
-        elif isinstance(base_ensemble, LGBMClassifier):
+        elif str(base_ensemble.__class__) == "<class 'lightgbm.sklearn.LGBMClassifier'>":
             return LGBMClassifierExtractor(base_ensemble, column_names, classes,
                                            X)
-        elif isinstance(base_ensemble, CatBoostClassifier):
+        elif str(base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
             return CatBoostClassifierExtractor(base_ensemble, column_names,
                                                classes, X)
         elif isinstance(base_ensemble, DecisionTreeClassifier):

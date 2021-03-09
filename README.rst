@@ -37,15 +37,15 @@ Dependencies
 rulecosi is tested to work under Python 3.6+.
 The dependency requirements used when developing the library are:
 
-* pandas(1.1.5)
 * scipy(1.5.2)
 * numpy(1.19.1)
-* scikit-learn(0.24.1)
-* xgboost(0.90)
-* lightgbm(3.1.1)
-* catboost(0.24)
-* imbalanced-learn(0.7.0)
 * bitarray(1.5.2)
+* scikit-learn(0.24.1)
+* imbalanced-learn(0.7.0)
+* pandas(1.1.5)
+* xgboost(0.90) (optional)
+* lightgbm(3.1.1) (optional)
+* catboost(0.24) (optional)
 
 Installation
 ~~~~~~~~~~~~
@@ -54,7 +54,7 @@ From source available on GitHub
 ...............................
 
 Right now it is just agvailable from GitHub. You can clone it and run the setup.py file. Use the following
-commands to get a copy from Github and install all dependencies::
+commands to get a copy from Github and install all basic dependencies::
 
   git clone https://github.com/jobregon1212/rulecosi.git
   cd rulecosi
@@ -62,6 +62,19 @@ commands to get a copy from Github and install all dependencies::
 
 
 
+
+This installs the basic rulecosi package. It will only work with the following scikit-learn tree ensembles:
+BaggingClassifier, RandomForestClassifier and GradientBoostingClassifier.
+
+If you want to install the package with support to other ensembles, you have to add the required packages separated
+by commas inside square brackets when you install rulecosi. For example if you would like to have XGBoost support you
+have to run the following command::
+
+  git clone https://github.com/jobregon1212/rulecosi.git
+  cd rulecosi
+  pip install .[xgboost]
+
+The supported optional packages are xgboost, lightgbm and catboost.
 
 Development
 -----------
@@ -103,5 +116,5 @@ For more information you can check the usage in the docstrings or the examples f
 References:
 -----------
 
-.. [1] : Obregon, J., Kim, A., & Jung, J. Y. (2019). RuleCOSI: Combination and simplification of production rules from boosted decision trees for imbalanced classification. Expert Systems with Applications, 126, 64-82.
+.. [1] Obregon, J., Kim, A., & Jung, J. Y. (2019). RuleCOSI: Combination and simplification of production rules from boosted decision trees for imbalanced classification. Expert Systems with Applications, 126, 64-82.
 

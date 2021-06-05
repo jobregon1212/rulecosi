@@ -76,6 +76,12 @@ have to run the following command::
 
 The supported optional packages are xgboost, lightgbm and catboost.
 
+Documentation
+-----------
+
+The python documentation is available in `this link
+<https://josue-obregon.com/rulecosi/>`_.
+
 Development
 -----------
 

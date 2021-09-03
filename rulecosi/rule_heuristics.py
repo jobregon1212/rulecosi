@@ -64,9 +64,9 @@ class RuleHeuristics:
         self.y = y
         self.classes_ = classes_
         self.condition_map = condition_map
-        self.cov_threshold = cov_threshold
+        self.cov_threshold = cov_threshold # remove
         self.conf_threshold = conf_threshold
-        self.min_samples = min_samples
+        self.min_samples = min_samples # remove
 
         self.training_bit_sets = None
         self._cond_cov_dict = None
@@ -94,7 +94,7 @@ class RuleHeuristics:
         if len(conditions) == 0:
             return heuristics_dict
         b_array_conds = [reduce(operator.and_,
-                                [self._cond_cov_dict[i][cond] for cond in
+                                [self._cond_cov_dict[i][cond[0]] for cond in
                                  conditions])
                          for i in range(len(self.classes_))]
         b_array_conds.append(reduce(operator.or_, [i for i in b_array_conds]))
@@ -124,7 +124,7 @@ class RuleHeuristics:
         return heuristics_dict
 
     def compute_rule_heuristics(self, ruleset, uncovered_mask=None,
-                                sequential_coverage=False):
+                                sequential_covering=False):
         """ Compute rule heuristics, but without the sequential_coverage
         parameter, and without removing the rules that do not meet the
         thresholds
@@ -134,7 +134,7 @@ class RuleHeuristics:
         :param uncovered_mask: if different than None, mask out the records that
             are already covered from the training set. Default is None.
 
-        :param sequential_coverage:If true, the covered examples covered by one
+        :param sequential_covering:If true, the covered examples covered by one
             rule are removed. Additionally, if a rule does not meet the
             threshold is discarded. If false, it just compute the heuristics
             with all the records on the training set for all the rules. Default
@@ -143,9 +143,15 @@ class RuleHeuristics:
         """
         if uncovered_mask is None:
             uncovered_mask = one_bitarray(self.X.shape[0])
-        if sequential_coverage:
-            ruleset.rules[:] = [rule for rule in ruleset if
-                                self.rule_is_accurate(rule, uncovered_mask)]
+        if sequential_covering:
+            for rule in ruleset:
+               #local_uncovered_instances = copy.copy(uncovered_mask)
+               heuristics_dict = self.get_conditions_heuristics(rule.A,
+                                                                uncovered_mask=uncovered_mask)
+               rule.set_heuristics(heuristics_dict)
+            #     self.rule_is_accurate(rule, uncovered_mask)
+            # # ruleset.rules[:] = [rule for rule in ruleset if
+            # #                     self.rule_is_accurate(rule, uncovered_mask)]
         else:
             for rule in ruleset:
                 local_uncovered_instances = copy.copy(uncovered_mask)
@@ -204,7 +210,8 @@ class RuleHeuristics:
         heuristics_dict = self.get_conditions_heuristics(rule.A,
                                                          uncovered_mask=local_uncovered_instances)
         rule.set_heuristics(heuristics_dict)
-        if rule.cov > self.cov_threshold and rule.conf > self.conf_threshold:
+        #if rule.cov > self.cov_threshold and rule.conf > self.conf_threshold:
+        if rule.conf > self.conf_threshold:
             uncovered_instances.clear()
             uncovered_instances.extend(local_uncovered_instances)
             return True

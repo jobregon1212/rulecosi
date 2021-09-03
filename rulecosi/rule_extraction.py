@@ -179,7 +179,8 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             att_name = None
             if self._column_names is not None:
                 att_name = self._column_names[feature[node_index]]
-            condition_set_left = copy.deepcopy(condition_set)
+            condition_set_left = copy.copy(condition_set)
+            #condition_set_left = copy.copy(condition_set)
             # determine operators
             op_left, op_right = self.get_split_operators()
 
@@ -187,7 +188,8 @@ class BaseRuleExtractor(metaclass=ABCMeta):
                                            threshold[node_index],
                                            att_name)
             condition_map[hash(new_condition_left)] = new_condition_left
-            condition_set_left.add(hash(new_condition_left))
+            #condition_set_left.add(hash(new_condition_left))
+            condition_set_left.add((hash(new_condition_left),new_condition_left))
             left_rules = self.recursive_extraction(tree_dict, tree_index,
                                                    node_index=children_left[
                                                        node_index],
@@ -195,12 +197,15 @@ class BaseRuleExtractor(metaclass=ABCMeta):
                                                    condition_map=condition_map)
             rules = rules + left_rules
 
-            condition_set_right = copy.deepcopy(condition_set)
+            condition_set_right = copy.copy(condition_set)
+            #condition_set_right = copy.copy(condition_set)
             new_condition_right = Condition(feature[node_index], op_right,
                                             threshold[node_index],
                                             att_name)
             condition_map[hash(new_condition_right)] = new_condition_right
-            condition_set_right.add(hash(new_condition_right))
+            #condition_set_right.add(hash(new_condition_right))
+            condition_set_right.add(
+                (hash(new_condition_right), new_condition_right))
             right_rules = self.recursive_extraction(tree_dict, tree_index,
                                                     node_index=children_right[
                                                         node_index],
@@ -460,6 +465,8 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
             class_dist = _get_class_dist(raw_to_proba)
         else:
             class_dist = logit_score - logsumexp(logit_score)
+
+        # predict y_class_index = np.argmax(class_dist).item()
         y_class_index = np.argmax(class_dist).item()
         y = np.array([self.classes_[y_class_index]])
         return Rule(frozenset(condition_set), class_dist=class_dist,
@@ -560,7 +567,12 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
         if 'children' in tree:
             tree_dict['children_left'][node_id] = tree['children'][0]['nodeid']
             tree_dict['children_right'][node_id] = tree['children'][1]['nodeid']
-            tree_dict['feature'][node_id] = int(tree['split'][1:])
+            # tree_dict['feature'][node_id] = int(tree['split'][1:])
+            if not str.isdigit(tree['split']):
+                tree_dict['feature'][node_id] = np.where(self._column_names==tree['split'])[0].item() # 2021/23/06 change, the split directly
+            else:
+                tree_dict['feature'][node_id] = int(
+                    tree['split'])  # 2021/23/06 change, the split directly
             tree_dict['threshold'][node_id] = tree['split_condition']
             self._populate_tree_dict(tree['children'][0], tree_dict)
             self._populate_tree_dict(tree['children'][1], tree_dict)

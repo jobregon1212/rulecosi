@@ -2,7 +2,6 @@
 
 """
 
-
 import numpy as np
 import pandas as pd
 import operator
@@ -37,6 +36,7 @@ class RuleSet:
 
 
     """
+
     def __init__(self, rules=None, condition_map=None, ruleset=None):
         if condition_map is None:
             condition_map = {}
@@ -62,17 +62,35 @@ class RuleSet:
         conditions present in the rules
 
         """
-        condition_set = {cond
+        condition_set = {cond[0]
                          for rule in self.rules
                          for cond in rule.A}
-        self.condition_map = {key: self.condition_map[key] for key in condition_set}
+        self.condition_map = {key: self.condition_map[key] for key in
+                              condition_set}
+
+    def ordered_condition_map(self):
+        if self.condition_map is not None:
+            return {k: v for k, v
+                    in sorted(self.condition_map.items(),
+                              key=lambda item: str(item[1]))}
+
+    def ordered_by_rule_condition_map(self):
+        ordered_cond_map = dict()
+        if self.condition_map is not None:
+            for rule in self.rules:
+                ordered_cond_map.update({k: v for k, v
+                                         in sorted(rule.A,
+                                                   key=lambda item: str(
+                                                       item[1]))})
+        return ordered_cond_map
 
     def __str__(self):
         return_str = ''
         i = 1
         for rule in self.rules:
             rule_string = 'r_{}: '.format(i)
-            rule_string = rule_string + ' ˄ '.join(map(lambda cond: str(self.condition_map[cond]), rule.A))
+            rule_string = rule_string + ' ˄ '.join(
+                map(lambda cond: str(cond[1]), rule.A))
             rule_string += ' → ' + str(rule.y)
             rule_string += '\n'
             return_str += rule_string
@@ -209,13 +227,17 @@ class RuleSet:
 
         """
         if proba:
-            prediction = np.empty((X.shape[0], self.rules[0].class_dist.shape[0]))
+            prediction = np.empty(
+                (X.shape[0], self.rules[0].class_dist.shape[0]))
         else:
-            prediction = np.empty((X.shape[0], self.rules[0].y.shape[0]), dtype=self.rules[0].y.dtype)
+            prediction = np.empty((X.shape[0], self.rules[0].y.shape[0]),
+                                  dtype=self.rules[0].y.dtype)
 
-        covered_mask = np.zeros((X.shape[0],), dtype=bool)  # records the records that are already covered by some rule
+        covered_mask = np.zeros((X.shape[0],),
+                                dtype=bool)  # records the records that are already covered by some rule
         for i, rule in enumerate(self.rules):
-            r_pred, r_mask = rule.predict(X, condition_map=self.condition_map, proba=proba)
+            r_pred, r_mask = rule.predict(X, condition_map=self.condition_map,
+                                          proba=proba)
             # update the covered_mask with the records covered by this rule
             remaining_covered_mask = ~covered_mask & r_mask
             # and then update the predictions of the remaining uncovered cases with the covered records of this rule
@@ -260,13 +282,18 @@ class RuleSet:
             else:
                 sample_tab = '\t\t'
             rule_string = f'{rule.cov:.{heuristics_digits}f}\t{rule.conf:.{heuristics_digits}f}\t{rule.supp:.{heuristics_digits}f}\t{samples}{sample_tab}r_{i}: '
-            rule_row = [f'{rule.cov:.{heuristics_digits}f}', f'{rule.conf:.{heuristics_digits}f}', f'{rule.supp:.{heuristics_digits}f}', samples, f'r_{i}']
+            rule_row = [f'{rule.cov:.{heuristics_digits}f}',
+                        f'{rule.conf:.{heuristics_digits}f}',
+                        f'{rule.supp:.{heuristics_digits}f}', samples, f'r_{i}']
             if len(rule.A) == 0:
                 rule_string = rule_string + '( )'
                 rule_row.append('()')
             else:
-                A_string = ' ˄ '.join(
-                    map(lambda cond: self.condition_map[cond].__str__(digits=condition_digits), rule.A))
+                # A_string = ' ˄ '.join(
+                #     map(lambda cond: self.condition_map[hash(cond)].__str__(
+                #         digits=condition_digits), sorted([cond[1] for cond in rule.A])))
+                A_string = ' ˄ '.join(sorted([cond[1].__str__(
+                    digits=condition_digits) for cond in rule.A]))
                 rule_string = rule_string + A_string
                 rule_row.append(A_string)
             rule_string += ' → ' + str(rule.y)
@@ -291,16 +318,20 @@ class Rule:
         y is the predicted class, also called head of the rule.
     """
 
-    def __init__(self, conditions, class_dist=None, logit_score=None, y=None, y_class_index=None, n_samples=None,
+    def __init__(self, conditions, class_dist=None, logit_score=None, y=None,
+                 y_class_index=None, n_samples=None,
                  n_outputs=1, classes=None, weight=0):
         if classes is None:
             self.classes = [0, 1]
         else:
             self.classes = list(classes)
         if class_dist is None:
-            class_dist = np.array([1.0 / len(self.classes) for _ in self.classes])
+            class_dist = np.array(
+                [1.0 / len(self.classes) for _ in self.classes])
         if n_samples is None:
             self.n_samples = np.array([0 for _ in self.classes])
+        else:
+            self.n_samples = n_samples
 
         self.A = conditions  # conditions
         self.class_dist = class_dist
@@ -317,7 +348,9 @@ class Rule:
         if len(self.A) == 0:
             return_string = '( )'
         else:
-            return_string = ' ˄ '.join(map(str, self.A))
+            # return_string = ' ˄ '.join(map(str, sorted([cond[1] for cond in self.A])))
+            return_string = ' ˄ '.join(
+                sorted([str(cond[1]) for cond in self.A]))
         return_string += ' → ' + str(self.y)
         return return_string
 
@@ -362,7 +395,9 @@ class Rule:
 
         # apply the and operator to all "satisfies _array" functions of the conditions of this rule
         if len(self.A) > 0:
-            mask = reduce(operator.and_, [condition_map[cond].satisfies_array(X) for cond in self.A])
+            mask = reduce(operator.and_,
+                          [cond[1].satisfies_array(X) for cond in
+                           self.A])
         if proba:
             prediction = np.zeros((X.shape[0], self.class_dist.shape[0]))
             prediction[mask] = self.class_dist
@@ -406,7 +441,9 @@ class Rule:
         self.supp = heuristics_dict['supp'][self.class_index]
         self.cov = heuristics_dict['cov']
         if self.cov > 0:
-            self.n_samples = np.array([heuristics_dict['cov_set'][i].count() for i in range(len(self.classes))])
+            self.n_samples = np.array(
+                [heuristics_dict['cov_set'][i].count() for i in
+                 range(len(self.classes))])
 
 
 class Condition:
@@ -431,7 +468,6 @@ class Condition:
         # return '({} {} {:.3f})'.format(self.att_name, op_dict[self.op.__name__], self.value)
         return f'({self.att_name} {op_dict[self.op.__name__]} {self.value:.{digits}f})'
 
-
     def __repr__(self):
         return str(self)
 
@@ -444,6 +480,22 @@ class Condition:
             if self.op != other.op:
                 return False
             return self.value == other.value
+        return False
+
+    def __lt__(self, other):
+        if isinstance(other, Condition):
+            if hash(self) == hash(other):
+                return False
+            else:
+                return self.att_name < other.att_name
+        return False
+
+    def __gt__(self, other):
+        if isinstance(other, Condition):
+            if hash(self) == hash(other):
+                return False
+            else:
+                return self.att_name > other.att_name
         return False
 
     def __hash__(self):

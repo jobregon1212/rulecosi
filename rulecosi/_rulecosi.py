@@ -116,10 +116,11 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                  tree_max_depth=3,
                  cov_threshold=0.0,
                  conf_threshold=0.5,
+                 m=0.5,
                  min_samples=1,
                  max_antecedents=5,
                  early_stop=0.30,
-                 metric='gmean',
+                 metric='f1',
                  column_names=None,
                  random_state=None,
                  verbose=0):
@@ -129,6 +130,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self.tree_max_depth = tree_max_depth
         self.cov_threshold = cov_threshold
         self.conf_threshold = conf_threshold
+        self.m = m
         self.min_samples = min_samples
         self.max_antecedents = max_antecedents
         self.early_stop = early_stop
@@ -274,6 +276,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                     f'{self.metric}: {self.simplified_ruleset_.metric(self.metric)}')
         for i in range(1, len(processed_rulesets)):
             # combine the rules
+            self._rule_heuristics.compute_rule_heuristics(processed_rulesets[i])
             combined_rules = self._combine_rulesets(self.simplified_ruleset_,
                                                     processed_rulesets[i])
             if self.verbose > 1:
@@ -318,6 +321,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                                              if rule.cov > 0]
         if self.verbose > 0:
             print(f'Finish combination process, adding default rule...')
+
         self._add_default_rule(self.simplified_ruleset_)
         self.simplified_ruleset_.prune_condition_map()
         end_time = time.time()
@@ -589,19 +593,21 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                  tree_max_depth=3,
                  cov_threshold=0.0,
                  conf_threshold=0.5,
+                 m=None,
                  min_samples=1,
                  max_antecedents=5,
                  early_stop=0.30,
-                 metric='gmean',
+                 metric='f1',
                  column_names=None,
                  random_state=None,
-                 rule_order='cov',
+                 rule_order='conf',
                  verbose=0
                  ):
         super().__init__(base_ensemble=base_ensemble,
                          n_estimators=n_estimators,
                          tree_max_depth=tree_max_depth,
                          cov_threshold=cov_threshold,
+                         m=m,
                          min_samples=min_samples,
                          max_antecedents=max_antecedents,
                          early_stop=early_stop,
@@ -763,7 +769,23 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                 #     {cond[0] for cond in r2.A})
                 r1_AUr2_A = set(r1.A.union(r2.A))
 
-                # create the new rule and compute class distribution and predicted class
+                if frozenset(r1_AUr2_A) in self._bad_combinations:
+                    continue
+
+                heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
+                    r1_AUr2_A)
+                if heuristics_dict['cov'] > 0:
+                    samples_combination = np.array(
+                        [heuristics_dict['cov_set'][i].count() for i in
+                         range(len(self.classes_))]).sum()
+                    cdp_data = np.array(
+                        [heuristics_dict['cov_set'][i].count() for i in
+                         range(len(self.classes_))]) / samples_combination
+                else:
+                    samples_combination = 0
+                    cdp_data = np.array([0 for i in range(len(self.classes_))])
+
+                    # create the new rule and compute class distribution and predicted class
                 weight = None
                 if self._base_ens_type == 'bagging':
                     if self._weights is None:
@@ -771,7 +793,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                                              axis=0).reshape(
                             (len(self.classes_),))
                     else:
-                        print('has weights') # xgbchange
+                        print('has weights')  # xgbchange
                         class_dist = np.average([r1.class_dist, r2.class_dist],
                                                 axis=0,
                                                 weights=[r1.weight,
@@ -783,16 +805,31 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     logit_score = 0
                 elif self._base_ens_type == 'gbt':
                     logit_score = r1.logit_score + r2.logit_score
-                    if len(self.classes_) == 2:
-                        raw_to_proba = expit(logit_score)
-                        class_dist = np.array(
-                            [raw_to_proba.item(), 1 - raw_to_proba.item()])
-                    else:
-                        class_dist = logit_score - logsumexp(logit_score)
+                    # if len(self.classes_) == 2:
+                    #     raw_to_proba = expit(logit_score)
+                    #     class_dist = np.array(
+                    #         [raw_to_proba.item(), 1 - raw_to_proba.item()])
+                    # else:
+                    #     class_dist = logit_score - logsumexp(logit_score)
 
                     class_dist = np.mean([r1.class_dist, r2.class_dist],
                                          axis=0).reshape(
-                        (len(self.classes_),)) # xgbchang
+                        (len(self.classes_),))  # xgbchang
+
+                    # testing with smoothing the probability
+                    # ========================================
+                    # cdp_data = (r1.n_samples + r2.n_samples) / (
+                    #         r1.n_samples + r2.n_samples).sum()
+
+                    class_dist = np.average([class_dist, cdp_data],
+                                            axis=0,
+                                            weights=[self._weight_function(
+                                                samples_combination),
+                                                     1 - self._weight_function(
+                                                         samples_combination)])
+
+                    # ============================================
+
                     y_class_index = np.argmax(class_dist).item()
                     y = np.array([self.classes_[y_class_index]])
                 elif self._base_ens_type == 'regressor':
@@ -815,8 +852,8 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
                 # check if the combination was null before, if it was we just
                 # skip it
-                if new_rule in self._bad_combinations:
-                    continue
+                # if new_rule in self._bad_combinations:
+                #     continue
                 # if the combination was a good one before, we just add the
                 # combination to the rules
                 if new_rule in self._good_combinations:
@@ -824,8 +861,8 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     new_rule.set_heuristics(heuristics_dict)
                     combined_rules.add(new_rule)
                 else:
-                    heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
-                        r1_AUr2_A)
+                    # heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
+                    #     r1_AUr2_A)
                     # new_cond_set)
                     new_rule.set_heuristics(heuristics_dict)
                     # new_rule_cov, new_rule_conf_supp = self.rule_heuristics.get_conditions_heuristics(r1_AUr2_A)
@@ -838,7 +875,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                         combined_rules.add(new_rule)
                         self._good_combinations[new_rule] = heuristics_dict
                     else:
-                        self._bad_combinations.add(new_rule)
+                        self._bad_combinations.add(frozenset(r1_AUr2_A))
 
         return combined_rules
 
@@ -1133,6 +1170,13 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     f'\tBest {self.metric}, Previous combined rules: {simplified_ruleset.metric(self.metric)}')
             return simplified_ruleset, 'simp'
 
+    def _weight_function(self, n):
+        if n == 0:
+            return 0
+        if self.m is None:
+            return n / (n + n)
+        else:
+            return n / (n + self.m)
     # def _get_gbm_init(self):
     #     """ get the initial estimate of a GBM ensemble
     #

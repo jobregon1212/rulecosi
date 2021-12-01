@@ -195,6 +195,16 @@ class RuleSet:
         """
         return np.ravel(self._predict(X)[0])
 
+    # def _predict_internal(self, X):
+    #     """ Make predictions for the input values in X.
+    #
+    #     :param X: X : array-like, shape (n_samples, n_features)
+    #         The input samples.
+    #     :return: y_pred: array-like, shape (n_samples,)
+    #         The predicted target values
+    #     """
+    #     return np.ravel(self._predict(X)[0])
+
     def predict_proba(self, X):
         """ Make probability predictions for the input values in X.
 
@@ -318,8 +328,9 @@ class Rule:
         y is the predicted class, also called head of the rule.
     """
 
-    def __init__(self, conditions, class_dist=None, logit_score=None, y=None,
-                 y_class_index=None, n_samples=None,
+    def __init__(self, conditions, class_dist=None, ens_class_dist=None,
+                 local_class_dist=None, logit_score=None,
+                 y=None, y_class_index=None, n_samples=None,
                  n_outputs=1, classes=None, weight=0):
         if classes is None:
             self.classes = [0, 1]
@@ -335,6 +346,8 @@ class Rule:
 
         self.A = conditions  # conditions
         self.class_dist = class_dist
+        self.ens_class_dist = ens_class_dist
+        self.local_class_dist = local_class_dist
         self.logit_score = logit_score
         self.y = y
         self.class_index = y_class_index

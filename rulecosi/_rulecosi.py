@@ -34,6 +34,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.utils.multiclass import unique_labels
+from sklearn.model_selection import train_test_split
 
 from sklearn.ensemble import RandomForestClassifier, BaggingClassifier
 from sklearn.ensemble import GradientBoostingClassifier
@@ -41,7 +42,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 
 from .helpers import one_bitarray
 from rulecosi.rules import Rule, RuleSet
-from .rule_extraction import RuleExtractorFactory
+from .rule_extraction import RuleExtractorFactory, get_class_dist
 from .rule_heuristics import RuleHeuristics
 
 
@@ -116,10 +117,11 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                  tree_max_depth=3,
                  cov_threshold=0.0,
                  conf_threshold=0.5,
-                 m=0.5,
+                 m=None,
+                 percent_training=None,
                  min_samples=1,
                  max_antecedents=5,
-                 early_stop=0.30,
+                 early_stop=0,
                  metric='f1',
                  column_names=None,
                  random_state=None,
@@ -131,6 +133,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self.cov_threshold = cov_threshold
         self.conf_threshold = conf_threshold
         self.m = m
+        self.percent_training = percent_training
         self.min_samples = min_samples
         self.max_antecedents = max_antecedents
         self.early_stop = early_stop
@@ -148,6 +151,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self._bad_combinations = None
         self._good_combinations = None
         self._early_stop_cnt = 0
+        self._training_variance = 0
 
     def fit(self, X, y, sample_weight=None):
         """ Combine and simplify the decision trees from the base ensemble
@@ -187,9 +191,21 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         # Store the classes seen during fit
         self.classes_ = unique_labels(y)
 
-        self.X_ = X
-        self.y_ = y
+        if self.percent_training is None:
+            self.X_ = X
+            self.y_ = y
+        else:
+            x, _, y, _ = train_test_split(X, y,
+                                          test_size=(1 - self.percent_training),
+                                          shuffle=True, stratify=y,
+                                          random_state=self.random_state)
+            # sub_idx = np.random.choice(X.shape[0],
+            #                            int(X.shape[0]*self.percent_training),
+            #                            replace=False)
+            self.X_ = x
+            self.y_ = y
 
+        self._training_variance = self.X_.var()
         if self.n_estimators is None or self.n_estimators < 2:
             raise ValueError(
                 "Parameter n_estimators should be at least 2 for using the RuleCOSI method.")
@@ -226,7 +242,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         # First step is extract the rules
         self._rule_extractor = RuleExtractorFactory.get_rule_extractor(
             self.base_ensemble, self.column_names,
-            self.classes_, self.X_)
+            self.classes_, self.X_, self.y_)
         if self.verbose > 0:
             print(
                 f'Extracting rules from {type(self.base_ensemble).__name__} base ensemble...')
@@ -249,15 +265,15 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self._rule_heuristics.compute_rule_heuristics(self.simplified_ruleset_)
         # if str(self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
         self._simplify_rulesets(
-            self.simplified_ruleset_)  ### change rulelat
+            self.simplified_ruleset_)  ### change rulelat.py
         self._add_default_rule(self.simplified_ruleset_)
         self.simplified_ruleset_.compute_classification_performance(self.X_,
                                                                     self.y_)
         self.simplified_ruleset_.rules.pop()
         # else:
         #     self._simplify_rulesets(
-        #         self.simplified_ruleset_)  ### change rulelat
-        #     self.simplified_ruleset_.print_rules() #rulelat
+        #         self.simplified_ruleset_)  ### change rulelat.py
+        #     self.simplified_ruleset_.print_rules() #rulelat.py
         #     self.simplified_ruleset_.compute_classification_performance(self.X_, self.y_)
 
         self.n_combinations_ = 0
@@ -289,15 +305,15 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                 print(
                     f'\tSequential covering pruned rules size: {len(combined_rules.rules)} rules')
             # simplify rules
-            # combined_rules.print_rules()  # rulelat
+            # combined_rules.print_rules()  # rulelat.py
             self._simplify_rulesets(combined_rules)
-            # combined_rules.print_rules()  # rulelat
+            # combined_rules.print_rules()  # rulelat.py
             if self.verbose > 1:
                 print(
                     f'\tSimplified rules size: {len(combined_rules.rules)} rules')
-            if self.verbose > 1:
-                print(
-                    f'\tCombined rules size: {len(combined_rules.rules)} rules')
+            # if self.verbose > 1:
+            #     print(
+            #         f'\tCombined rules size: {len(combined_rules.rules)} rules')
             # skip if the combined rules are empty
             if len(combined_rules.rules) == 0:
                 if self.verbose > 1:
@@ -314,7 +330,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
             #    no_combinations = False
             # print('#################################')
         # if no_combinations:  # if any combination was successful, we just simplify the first ruleset
-        #     self._simplify_rulesets(self.simplified_ruleset_)
+        # self._simplify_rulesets(self.simplified_ruleset_)
 
         self.simplified_ruleset_.rules[:] = [rule for rule in
                                              self.simplified_ruleset_.rules
@@ -594,6 +610,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                  cov_threshold=0.0,
                  conf_threshold=0.5,
                  m=None,
+                 percent_training=None,
                  min_samples=1,
                  max_antecedents=5,
                  early_stop=0.30,
@@ -608,6 +625,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                          tree_max_depth=tree_max_depth,
                          cov_threshold=cov_threshold,
                          m=m,
+                         percent_training=percent_training,
                          min_samples=min_samples,
                          max_antecedents=max_antecedents,
                          early_stop=early_stop,
@@ -719,6 +737,10 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
             ruleset.rules.sort(key=lambda rule: (rule.conf, rule.cov, rule.supp,
                                                  -1 * len(rule.A),
                                                  rule.__str__()), reverse=True)
+        elif self.rule_order == 'supp':
+            ruleset.rules.sort(key=lambda rule: (rule.supp, rule.conf, rule.cov,
+                                                 -1 * len(rule.A),
+                                                 rule.__str__()), reverse=True)
 
     def _combine_rulesets(self, ruleset1, ruleset2):
         """ Combine all the rules belonging to ruleset1 and ruleset2 using
@@ -771,79 +793,113 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
                 if frozenset(r1_AUr2_A) in self._bad_combinations:
                     continue
+                #
+                # heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
+                #     r1_AUr2_A)
+                # if heuristics_dict['cov'] > 0:
+                #     # local_N = np.array(
+                #     #     [heuristics_dict['cov_set'][i].count() for i in
+                #     #      range(len(self.classes_))]).sum()
+                #     local_N = heuristics_dict['cov_set'][
+                #         len(self.classes_)].count()
+                #     rule_class_dist = np.array(
+                #         [heuristics_dict['cov_set'][i].count() for i in
+                #          range(len(self.classes_))]) / local_N
+                #     local_variance = self.X_[heuristics_dict['cov_set'][
+                #         len(self.classes_)].tolist()].var()
+                #     m = local_variance / self._training_variance
+                #
+                # else:
+                #     # self._bad_combinations.add(frozenset(r1_AUr2_A))
+                #     local_N = 0
+                #     local_variance = 0
+                #     m = 1
+                #     rule_class_dist = np.array(
+                #         [0 for i in range(len(self.classes_))])
 
-                heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
-                    r1_AUr2_A)
-                if heuristics_dict['cov'] > 0:
-                    samples_combination = np.array(
-                        [heuristics_dict['cov_set'][i].count() for i in
-                         range(len(self.classes_))]).sum()
-                    cdp_data = np.array(
-                        [heuristics_dict['cov_set'][i].count() for i in
-                         range(len(self.classes_))]) / samples_combination
-                else:
-                    samples_combination = 0
-                    cdp_data = np.array([0 for i in range(len(self.classes_))])
-
-                    # create the new rule and compute class distribution and predicted class
+                # create the new rule and compute class distribution and predicted class
                 weight = None
-                if self._base_ens_type == 'bagging':
-                    if self._weights is None:
-                        class_dist = np.mean([r1.class_dist, r2.class_dist],
-                                             axis=0).reshape(
-                            (len(self.classes_),))
-                    else:
-                        print('has weights')  # xgbchange
-                        class_dist = np.average([r1.class_dist, r2.class_dist],
-                                                axis=0,
-                                                weights=[r1.weight,
-                                                         r2.weight]).reshape(
-                            (len(self.classes_),))
-                        weight = (r1.weight() + r2.weight) / 2
-                    y_class_index = np.argmax(class_dist).item()
-                    y = np.array([self.classes_[y_class_index]])
-                    logit_score = 0
-                elif self._base_ens_type == 'gbt':
-                    logit_score = r1.logit_score + r2.logit_score
-                    # if len(self.classes_) == 2:
-                    #     raw_to_proba = expit(logit_score)
-                    #     class_dist = np.array(
-                    #         [raw_to_proba.item(), 1 - raw_to_proba.item()])
-                    # else:
-                    #     class_dist = logit_score - logsumexp(logit_score)
+                # if self._base_ens_type == 'bagging':
+                if self._weights is None:
+                    ens_class_dist = np.mean(
+                        [r1.ens_class_dist, r2.ens_class_dist],
+                        axis=0).reshape(
+                        (len(self.classes_),))
+                else:
+                    # print('has weights')  # xgbchange
+                    ens_class_dist = np.average(
+                        [r1.ens_class_dist, r2.ens_class_dist],
+                        axis=0,
+                        weights=[r1.weight,
+                                 r2.weight]).reshape(
+                        (len(self.classes_),))
+                    weight = (r1.weight() + r2.weight) / 2
+                # y_class_index = np.argmax(ens_class_dist).item()
+                # y = np.array([self.classes_[y_class_index]])
+                logit_score = 0
+                # elif self._base_ens_type == 'gbt':
+                #     logit_score = r1.logit_score + r2.logit_score
+                #     if len(self.classes_) == 2:
+                #         raw_to_proba = expit(logit_score)
+                #         ens_class_dist = get_class_dist(raw_to_proba)
+                #         # ens_class_dist = np.array(
+                #         #     [raw_to_proba.item(), 1 - raw_to_proba.item()])
+                #     else:
+                #         ens_class_dist = logit_score - logsumexp(logit_score)
 
-                    class_dist = np.mean([r1.class_dist, r2.class_dist],
-                                         axis=0).reshape(
-                        (len(self.classes_),))  # xgbchang
+                # class_dist = np.mean([r1.class_dist, r2.class_dist],
+                #                      axis=0).reshape(
+                #     (len(self.classes_),))  # xgbchang
 
-                    # testing with smoothing the probability
-                    # ========================================
-                    # cdp_data = (r1.n_samples + r2.n_samples) / (
-                    #         r1.n_samples + r2.n_samples).sum()
+                # testing with smoothing the probability
+                # ========================================
+                # rule_class_dist = (r1.n_samples + r2.n_samples) / (
+                #         r1.n_samples + r2.n_samples).sum()
 
-                    class_dist = np.average([class_dist, cdp_data],
-                                            axis=0,
-                                            weights=[self._weight_function(
-                                                samples_combination),
-                                                     1 - self._weight_function(
-                                                         samples_combination)])
+                # ens_class_dist = np.average([ens_class_dist, rule_class_dist],
+                #                             axis=0)
 
-                    # ============================================
+                # ens_class_dist = np.average([ens_class_dist, rule_class_dist],
+                #                             axis=0,
+                #                             weights=[self._weight_function(
+                #                                 local_N),
+                #                                 1 - self._weight_function(
+                #                                     local_N)])
 
-                    y_class_index = np.argmax(class_dist).item()
-                    y = np.array([self.classes_[y_class_index]])
-                elif self._base_ens_type == 'regressor':
-                    y = np.mean([r1.y, r2.y], axis=0)
+                # ============================================
 
-                if str(
-                        self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
-                    self._remove_opposite_conditions(r1_AUr2_A, y_class_index)
+                # y_class_index = np.argmax(ens_class_dist).item()
+                # y = np.array([self.classes_[y_class_index]])
+                # else:
+                #     logit_score = 0
+                #     ens_class_dist = np.mean(
+                #         [r1.ens_class_dist, r2.ens_class_dist],
+                #         axis=0).reshape(
+                #         (len(self.classes_),))
+                # elif self._base_ens_type == 'regressor':
+                #     y = np.mean([r1.y, r2.y], axis=0)
+                # w_r = self._weight_function(local_N, m)
+                # print(ens_weight)
+                # class_dist = np.average([rule_class_dist, ens_class_dist],
+                #                         axis=0,
+                #                         weights=[w_r,
+                #                                  1 - w_r])
+                class_dist = ens_class_dist
+                y_class_index = np.argmax(class_dist).item()
+                y = np.array([self.classes_[y_class_index]])
+
+                # if str(
+                #        self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
+                # self._remove_opposite_conditions(r1_AUr2_A, y_class_index)
 
                 # new_cond_set = {(cond, self._global_condition_map[cond])
                 #                 for cond in r1_AUr2_A}
                 # new_rule = Rule(frozenset(new_cond_set), class_dist=class_dist,
                 new_rule = Rule(frozenset(r1_AUr2_A),
                                 class_dist=class_dist,
+                                ens_class_dist=ens_class_dist,
+                                local_class_dist=ens_class_dist,
+                                # rule_class_dist,
                                 logit_score=logit_score, y=y,
                                 y_class_index=y_class_index,
                                 classes=self.classes_, weight=weight)
@@ -861,8 +917,8 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     new_rule.set_heuristics(heuristics_dict)
                     combined_rules.add(new_rule)
                 else:
-                    # heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
-                    #     r1_AUr2_A)
+                    heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
+                        r1_AUr2_A)
                     # new_cond_set)
                     new_rule.set_heuristics(heuristics_dict)
                     # new_rule_cov, new_rule_conf_supp = self.rule_heuristics.get_conditions_heuristics(r1_AUr2_A)
@@ -1003,7 +1059,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     found_rule = True
                     break
         ruleset.rules[:] = return_ruleset
-        # self._sort_ruleset(ruleset) #rulelat
+        # self._sort_ruleset(ruleset) #rulelat.py
 
     def _simplify_rulesets(self, ruleset):
         """Simplifies the ruleset inplace using the pessimist error.
@@ -1016,7 +1072,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         """
         for rule in ruleset:
             rule.A = self._simplify_conditions(set(rule.A))
-            # RuleSet([rule], self._global_condition_map).print_rules() #rulelat
+            # RuleSet([rule], self._global_condition_map).print_rules() #rulelat.py
             base_line_error = self._compute_pessimistic_error(rule.A,
                                                               rule.class_index)
             min_error = 0
@@ -1036,7 +1092,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                 #         err[2]['conf'][rule.class_index],
                 #         err[2]['supp'][rule.class_index],
                 #         err[3]) for err
-                #        in sorted(errors, key=lambda tup: tup[3])])  # rulelat
+                #        in sorted(errors, key=lambda tup: tup[3])])  # rulelat.py
                 # min_error_tup = min(errors, key=lambda tup: tup[1])
                 min_error_tup = min(errors, key=lambda tup: (tup[1],
                                                              tup[2]['cov'],
@@ -1054,6 +1110,35 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     rule_conds = set(rule.A)
                     rule_conds.remove(min_error_tup[0])
                     rule.A = frozenset(rule_conds)
+
+        # if len(ruleset.rules) > 1:
+        #     preds, covered_mask = ruleset._predict(self.X_)
+        #     preds = np.ravel(preds)
+        #
+        #     total_instances = preds[covered_mask].shape[0]
+        #     accurate_instances = (
+        #                 preds[covered_mask] != self.y_[covered_mask]).sum()
+        #     error_rate = accurate_instances / total_instances
+        #
+        #     base_line_error = _pessimistic_error_rate(total_instances,error_rate, 1.15)
+        #     min_error = 0
+        #     while min_error <= base_line_error and len(ruleset.rules) > 1:
+        #         deleted_rule = ruleset.rules.pop(-1)
+        #         preds, covered_mask = ruleset._predict(self.X_)
+        #         preds = np.ravel(preds)
+        #
+        #         total_instances = preds[covered_mask].shape[0]
+        #         accurate_instances = (
+        #                 preds[covered_mask] != self.y_[covered_mask]).sum()
+        #         error_rate = accurate_instances / total_instances
+        #
+        #         new_error = _pessimistic_error_rate(total_instances,error_rate, 1.15)
+        #
+        #         if new_error <= base_line_error:
+        #             base_line_error = new_error
+        #         else:
+        #             ruleset.rules.append(deleted_rule)
+        #             break
 
         # min_cov = self.min_samples / self.X_.shape[0]
         ruleset.rules[:] = [rule for rule in ruleset
@@ -1090,12 +1175,16 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         # cov, class_cov = self.rule_heuristics.get_conditions_heuristics(conditions, return_set_size=True)
         heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
             conditions)
+
         total_instances = heuristics_dict['cov_set'][-1].count()
         accurate_instances = heuristics_dict['cov_set'][class_index].count()
 
         error_instances = total_instances - accurate_instances
         alpha_half = 1.15  # 25 % confidence for C4.5
-        e = error_instances / total_instances  # totalInstances
+        if total_instances == 0:
+            return 0
+        else:
+            e = error_instances / total_instances  # totalInstances
 
         return 100 * _pessimistic_error_rate(total_instances, e, alpha_half)
 
@@ -1136,6 +1225,18 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
             default_rule.supp = uncovered_dist[default_class_idx] / \
                                 self.X_.shape[0]
         ruleset.rules.append(default_rule)
+
+        default_class = default_rule.y
+        # rule_deleted = False
+
+        if len(ruleset.rules) > 3:
+            while ruleset.rules[-2].y == default_class and len(
+                    ruleset.rules) > 3:
+                # rule_deleted = True
+                ruleset.rules.pop(-2)
+                self._rule_heuristics.compute_rule_heuristics(ruleset,
+                                                              sequential_covering=True)
+
         return True
 
     def _evaluate_combinations(self, simplified_ruleset, combined_rules):
@@ -1170,11 +1271,11 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     f'\tBest {self.metric}, Previous combined rules: {simplified_ruleset.metric(self.metric)}')
             return simplified_ruleset, 'simp'
 
-    def _weight_function(self, n):
+    def _weight_function(self, n, m):
         if n == 0:
             return 0
         if self.m is None:
-            return n / (n + n)
+            return n / (n + m)
         else:
             return n / (n + self.m)
     # def _get_gbm_init(self):

@@ -53,11 +53,14 @@ class BaseRuleExtractor(metaclass=ABCMeta):
 
     """
 
-    def __init__(self, _ensemble, _column_names, classes_, X_):
+    def __init__(self, _ensemble, _column_names, classes_, X, y):
         self._column_names = _column_names
         self.classes_ = classes_
         self._ensemble = _ensemble
-        self.X_ = X_
+        self.X = X
+        self.y = y
+        _, counts = np.unique(self.y, return_counts=True)
+        self.class_ratio = counts.min() / counts.max()
 
     def get_tree_dict(self, base_tree, n_nodes=0):
         """ Create a dictionary with the information inside the base_tree
@@ -296,10 +299,15 @@ class DecisionTreeRuleExtractor(BaseRuleExtractor):
         y = np.array([self.classes_[y_class_index]])
 
         return Rule(frozenset(condition_set), class_dist=class_dist,
+                    ens_class_dist=class_dist,
                     logit_score=logit_score, y=y,
                     y_class_index=y_class_index,
                     n_samples=n_samples[node_index], classes=self.classes_,
                     weight=weight)
+
+
+def get_class_dist(raw_to_proba):
+    return np.array([1 - raw_to_proba.item(), raw_to_proba.item()])
 
 
 class ClassifierRuleExtractor(BaseRuleExtractor):
@@ -379,14 +387,11 @@ class ClassifierRuleExtractor(BaseRuleExtractor):
         y = np.array([self.classes_[y_class_index]])
 
         return Rule(frozenset(condition_set), class_dist=class_dist,
+                    ens_class_dist=class_dist,
                     logit_score=logit_score, y=y,
                     y_class_index=y_class_index,
                     n_samples=n_samples[node_index], classes=self.classes_,
                     weight=weight)
-
-
-def _get_class_dist(raw_to_proba):
-    return np.array([1 - raw_to_proba.item(), raw_to_proba.item()])
 
 
 class GBMClassifierRuleExtractor(BaseRuleExtractor):
@@ -462,7 +467,7 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         logit_score = init + value[node_index]
         raw_to_proba = expit(logit_score)
         if len(self.classes_) == 2:
-            class_dist = _get_class_dist(raw_to_proba)
+            class_dist = get_class_dist(raw_to_proba)
         else:
             class_dist = logit_score - logsumexp(logit_score)
 
@@ -470,6 +475,7 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         y_class_index = np.argmax(class_dist).item()
         y = np.array([self.classes_[y_class_index]])
         return Rule(frozenset(condition_set), class_dist=class_dist,
+                    ens_class_dist=class_dist,
                     logit_score=logit_score, y=y,
                     y_class_index=y_class_index,
                     n_samples=n_samples[node_index], classes=self.classes_,
@@ -480,7 +486,7 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
 
         :return: a double value of the initial estimate of the GBM ensemble
         """
-        return self._ensemble._raw_predict_init(self.X_[0].reshape(1, -1))
+        return self._ensemble._raw_predict_init(self.X[0].reshape(1, -1))
 
 
 class XGBClassifierExtractor(GBMClassifierRuleExtractor):
@@ -595,7 +601,7 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
         :return: a double value of the initial estimate of the GBM ensemble
         """
         if self._ensemble.base_score is None:
-            return 0.0
+            return self.class_ratio
         else:
             return self._ensemble.base_score
 
@@ -703,7 +709,7 @@ class LGBMClassifierExtractor(GBMClassifierRuleExtractor):
 
         :return: a double value of the initial estimate of the GBM ensemble
         """
-        return 0.0
+        return self.class_ratio
 
 
 class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
@@ -729,8 +735,8 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
     """
 
-    def __init__(self, _ensemble, _column_names, classes_, X_):
-        super().__init__(_ensemble, _column_names, classes_, X_)
+    def __init__(self, _ensemble, _column_names, classes_, X, y):
+        super().__init__(_ensemble, _column_names, classes_, X, y)
         self._splits = None
         self._leaf_nodes = None
 
@@ -830,7 +836,7 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
         :return: a double value of the initial estimate of the GBM ensemble
         """
-        return 0.0
+        return self.class_ratio
 
 
 class RuleExtractorFactory:
@@ -838,7 +844,7 @@ class RuleExtractorFactory:
 
     """
 
-    def get_rule_extractor(base_ensemble, column_names, classes, X):
+    def get_rule_extractor(base_ensemble, column_names, classes, X, y):
         """
 
         :param base_ensemble: BaseEnsemble object, default = None
@@ -866,19 +872,19 @@ class RuleExtractorFactory:
         if isinstance(base_ensemble, (
                 AdaBoostClassifier, BaggingClassifier, RandomForestClassifier)):
             return ClassifierRuleExtractor(base_ensemble, column_names, classes,
-                                           X)
+                                           X, y)
         elif isinstance(base_ensemble, GradientBoostingClassifier):
             return GBMClassifierRuleExtractor(base_ensemble, column_names,
-                                              classes, X)
+                                              classes, X, y)
         elif str(base_ensemble.__class__) == "<class 'xgboost.sklearn.XGBClassifier'>":
             return XGBClassifierExtractor(base_ensemble, column_names, classes,
-                                          X)
+                                          X, y)
         elif str(base_ensemble.__class__) == "<class 'lightgbm.sklearn.LGBMClassifier'>":
             return LGBMClassifierExtractor(base_ensemble, column_names, classes,
-                                           X)
+                                           X, y)
         elif str(base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
             return CatBoostClassifierExtractor(base_ensemble, column_names,
-                                               classes, X)
+                                               classes, X, y)
         elif isinstance(base_ensemble, DecisionTreeClassifier):
             return DecisionTreeRuleExtractor(base_ensemble, column_names,
-                                             classes, X)
+                                             classes, X, y)

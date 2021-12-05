@@ -7,6 +7,7 @@ import pandas as pd
 import operator
 from functools import reduce
 
+from gmpy2 import popcount
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from imblearn.metrics import geometric_mean_score
 from sklearn.utils import check_array
@@ -455,7 +456,7 @@ class Rule:
         self.cov = heuristics_dict['cov']
         if self.cov > 0:
             self.n_samples = np.array(
-                [heuristics_dict['cov_set'][i].count() for i in
+                [popcount(heuristics_dict['cov_set'][i]) for i in
                  range(len(self.classes))])
 
 

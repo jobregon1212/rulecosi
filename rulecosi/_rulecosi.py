@@ -23,9 +23,11 @@ import time
 from abc import abstractmethod, ABCMeta
 from ast import literal_eval
 from math import sqrt
+from sys import byteorder
 
 import numpy as np
 import pandas as pd
+from gmpy2 import popcount
 from scipy.special import expit, logsumexp
 
 from sklearn.base import BaseEstimator, ClassifierMixin
@@ -123,6 +125,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                  max_antecedents=5,
                  early_stop=0,
                  metric='f1',
+                 float_threshold=-1e-6,
                  column_names=None,
                  random_state=None,
                  verbose=0):
@@ -138,6 +141,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self.max_antecedents = max_antecedents
         self.early_stop = early_stop
         self.metric = metric
+        self.float_threshold = float_threshold
         self.column_names = column_names
         self.random_state = random_state
         self.verbose = verbose
@@ -242,7 +246,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         # First step is extract the rules
         self._rule_extractor = RuleExtractorFactory.get_rule_extractor(
             self.base_ensemble, self.column_names,
-            self.classes_, self.X_, self.y_)
+            self.classes_, self.X_, self.y_, self.float_threshold)
         if self.verbose > 0:
             print(
                 f'Extracting rules from {type(self.base_ensemble).__name__} base ensemble...')
@@ -615,6 +619,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                  max_antecedents=5,
                  early_stop=0.30,
                  metric='f1',
+                 float_threshold=1e-6,
                  column_names=None,
                  random_state=None,
                  rule_order='conf',
@@ -630,6 +635,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                          max_antecedents=max_antecedents,
                          early_stop=early_stop,
                          metric=metric,
+                         float_threshold=float_threshold,
                          column_names=column_names,
                          random_state=random_state,
                          verbose=verbose
@@ -917,7 +923,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     new_rule.set_heuristics(heuristics_dict)
                     combined_rules.add(new_rule)
                 else:
-                    heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
+                    heuristics_dict,_ = self._rule_heuristics.get_conditions_heuristics(
                         r1_AUr2_A)
                     # new_cond_set)
                     new_rule.set_heuristics(heuristics_dict)
@@ -1042,17 +1048,18 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         :return:
         """
         return_ruleset = []
-        uncovered_instances = one_bitarray(self.X_.shape[0])
+        uncovered_instances = int.from_bytes(np.ones(self.X_.shape[0])*np.uint8(255),byteorder=byteorder) #one_bitarray(self.X_.shape[0])
         found_rule = True
         while len(
-                ruleset.rules) > 0 and uncovered_instances.count() > 0 and found_rule:
+                ruleset.rules) > 0 and popcount(uncovered_instances) > 0 and found_rule:
             self._rule_heuristics.compute_rule_heuristics(ruleset,
                                                           uncovered_instances)
             self._sort_ruleset(ruleset)
             found_rule = False
             for rule in ruleset:
-                if self._rule_heuristics.rule_is_accurate(rule,
-                                                          uncovered_instances=uncovered_instances):
+                result, uncovered_instances = self._rule_heuristics.rule_is_accurate(rule,
+                                                          uncovered_instances=uncovered_instances)
+                if result:
                     return_ruleset.append(rule)
                     ruleset.rules[:] = [rule for rule in ruleset if
                                         rule != return_ruleset[-1]]
@@ -1083,7 +1090,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                            self._compute_pessimistic_error(
                                rule.A.difference({cond}), rule.class_index),
                            self._rule_heuristics.get_conditions_heuristics(
-                               [cond]),
+                               [cond])[0],
                            str(cond[1])) for cond
                           in rule.A]
 
@@ -1169,15 +1176,18 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         rule (between 0 and 100)
         """
         if len(conditions) == 0:
-            e = (self.X_.shape[0] - self._rule_heuristics.training_bit_sets[
-                class_index].count()) / self.X_.shape[0]
+            e = (self.X_.shape[0] - popcount(self._rule_heuristics.training_bit_sets[
+                class_index])) / self.X_.shape[0]
             return 100 * _pessimistic_error_rate(self.X_.shape[0], e, 1.15)
         # cov, class_cov = self.rule_heuristics.get_conditions_heuristics(conditions, return_set_size=True)
-        heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
+        heuristics_dict, _ = self._rule_heuristics.get_conditions_heuristics(
             conditions)
 
-        total_instances = heuristics_dict['cov_set'][-1].count()
-        accurate_instances = heuristics_dict['cov_set'][class_index].count()
+        # print(heuristics_dict['cov_set'][-1])
+        # if not isinstance(heuristics_dict['cov_set'][-1],int):
+        #     stop =[]
+        total_instances = popcount(heuristics_dict['cov_set'][-1])
+        accurate_instances = popcount(heuristics_dict['cov_set'][class_index])
 
         error_instances = total_instances - accurate_instances
         alpha_half = 1.15  # 25 % confidence for C4.5

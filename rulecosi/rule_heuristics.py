@@ -9,6 +9,7 @@ from gmpy2 import popcount
 from sys import byteorder
 import numpy as np
 
+from .helpers import BitArray
 from bitarray import bitarray
 
 from .helpers import one_bitarray
@@ -76,6 +77,11 @@ class RuleHeuristics:
 
         self.training_heuristics_dict = None
 
+        self.ones = int.from_bytes(
+                np.packbits(np.ones(self.X.shape[0],dtype=bool)), byteorder=byteorder)
+        self.zeros = int.from_bytes(
+            np.packbits(np.zeros(self.X.shape[0],dtype=bool)), byteorder=byteorder)
+
     def get_conditions_heuristics(self, conditions,
                                   uncovered_mask=None):
         """ Compute the heuristics of the combination of conditions using the
@@ -104,9 +110,8 @@ class RuleHeuristics:
         b_array_conds = [reduce(operator.and_,
                                 [self._cond_cov_dict[i][cond[0]] for cond in
                                  conditions])
-                         for i in range(len(self.classes_)) ]
+                         for i in range(len(self.classes_))]
         b_array_conds.append(reduce(operator.or_, [i for i in b_array_conds]))
-
 
         if uncovered_mask is not None:
             b_array_conds = [b_array_measure & uncovered_mask for
@@ -117,10 +122,8 @@ class RuleHeuristics:
             uncovered_mask = updated_mask
         cov_count = popcount(b_array_conds[-1])  # .bit_count() #.sum()
         if cov_count == 0:
-            heuristics_dict['cov_set'] = [
-                int.from_bytes(np.ones(self.y.shape[0]) * np.uint8(0),
-                               byteorder=byteorder) for
-                i in range(len(self.classes_) + 1)]
+            heuristics_dict['cov_set'] = [self.zeros for
+                                          _ in range(len(self.classes_) + 1)]
             # int.from_bytes(np.ones(self.X.shape[0]) ,
             #                byteorder='big')
             return heuristics_dict, uncovered_mask
@@ -131,6 +134,8 @@ class RuleHeuristics:
 
         heuristics_dict['cov_set'] = b_array_conds
         heuristics_dict['cov'] = coverage
+        heuristics_dict['cov_count'] = cov_count
+        heuristics_dict['class_cov_count'] = class_cov_count
         heuristics_dict['conf'] = [class_count / cov_count for class_count in
                                    class_cov_count]
         heuristics_dict['supp'] = [class_count / self.X.shape[0] for class_count
@@ -213,26 +218,34 @@ class RuleHeuristics:
 
         """
         if uncovered_mask is None:
-            uncovered_mask = int.from_bytes(
-                np.ones(self.X.shape[0]) * np.uint8(255), byteorder=byteorder)
+            # uncovered_mask = int.from_bytes(
+            #     np.ones(self.X.shape[0]) * np.uint8(255), byteorder=byteorder)
+            uncovered_mask = self.ones
+
         if sequential_covering:
-            pruned_rules = []
+            accurate_rules = []
+            local_uncovered_instances = uncovered_mask
             for rule in ruleset:
-                local_uncovered_instances = copy.copy(uncovered_mask)
+
                 # heuristics_dict, uncovered_mask = self.get_conditions_heuristics(
                 #     rule.A,
                 #     uncovered_mask=uncovered_mask)
                 # rule.set_heuristics(heuristics_dict)
-                result, local_uncovered_instances = self.rule_is_accurate(rule, uncovered_mask)
+            #
+                result, uncovered_instances_with_rule = self.rule_is_accurate(rule,
+                                                                          local_uncovered_instances)
                 if result:
-                    pruned_rules.append(rule)
-            ruleset.rules[:] = pruned_rules
+                    accurate_rules.append(rule)
+                    local_uncovered_instances = uncovered_instances_with_rule
+
+            ruleset.rules[:] = accurate_rules
+
             # ruleset.rules[:] = [rule for rule in ruleset if
             #                      self.rule_is_accurate(rule, uncovered_mask)]
         else:
             for rule in ruleset:
                 local_uncovered_instances = uncovered_mask
-                heuristics_dict, local_uncovered_instances = self.get_conditions_heuristics(
+                heuristics_dict, _ = self.get_conditions_heuristics(
                     rule.A,
                     uncovered_mask=local_uncovered_instances)
                 rule.set_heuristics(heuristics_dict)
@@ -384,16 +397,16 @@ class RuleHeuristics:
         """
         if popcount(uncovered_instances) == 0:
             return False
-        local_uncovered_instances = uncovered_instances
+        # local_uncovered_instances = uncovered_instances
 
         heuristics_dict, local_uncovered_instances = self.get_conditions_heuristics(
             rule.A,
-            uncovered_mask=local_uncovered_instances)
+            uncovered_mask=uncovered_instances)
         rule.set_heuristics(heuristics_dict)
         # if rule.cov > self.cov_threshold and rule.conf > self.conf_threshold:
-        if rule.conf > self.conf_threshold:
-            uncovered_instances = local_uncovered_instances
-            return True, uncovered_instances
+        if rule.conf >= self.conf_threshold:
+            # uncovered_instances = local_uncovered_instances
+            return True, local_uncovered_instances
         else:
             return False, uncovered_instances
 
@@ -404,6 +417,8 @@ class RuleHeuristics:
         """
         return {'cov_set': None,
                 'cov': 0.0,
+                'cov_count': 0.0,
+                'class_cov_count': [0.0 for _ in self.classes_],
                 'conf': [0.0 for _ in self.classes_],
                 'supp': [0.0 for _ in self.classes_]}
 
@@ -421,6 +436,8 @@ class RuleHeuristics:
             train_heur_dict = {'cov_set': self.training_bit_sets[-1],
                                # maybe not -1
                                'cov': coverage,
+                               'cov_count': cov_count,
+                               'class_cov_count': class_cov_count,
                                'conf': [class_count / cov_count for class_count
                                         in
                                         class_cov_count],
@@ -442,6 +459,8 @@ class RuleHeuristics:
             coverage = cov_count / self.X.shape[0]
             return {'cov_set': masked_training_heuristics,
                     'cov': coverage,
+                    'cov_count': cov_count,
+                    'class_cov_count': class_cov_count,
                     'conf': [class_count / cov_count for class_count
                              in
                              class_cov_count],

@@ -268,6 +268,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self.simplified_ruleset_ = processed_rulesets[0]
         self._rule_heuristics.compute_rule_heuristics(self.simplified_ruleset_)
         # if str(self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
+
         self._simplify_rulesets(
             self.simplified_ruleset_)  ### change rulelat.py
         self._add_default_rule(self.simplified_ruleset_)
@@ -923,7 +924,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     new_rule.set_heuristics(heuristics_dict)
                     combined_rules.add(new_rule)
                 else:
-                    heuristics_dict,_ = self._rule_heuristics.get_conditions_heuristics(
+                    heuristics_dict, _ = self._rule_heuristics.get_conditions_heuristics(
                         r1_AUr2_A)
                     # new_cond_set)
                     new_rule.set_heuristics(heuristics_dict)
@@ -1048,17 +1049,20 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         :return:
         """
         return_ruleset = []
-        uncovered_instances = int.from_bytes(np.ones(self.X_.shape[0])*np.uint8(255),byteorder=byteorder) #one_bitarray(self.X_.shape[0])
+        uncovered_instances = self._rule_heuristics.ones
+        # uncovered_instances = int.from_bytes(np.ones(self.X_.shape[0])*np.uint8(255),byteorder=byteorder) #one_bitarray(self.X_.shape[0])
         found_rule = True
         while len(
-                ruleset.rules) > 0 and popcount(uncovered_instances) > 0 and found_rule:
+                ruleset.rules) > 0 and popcount(
+            uncovered_instances) > 0 and found_rule:
             self._rule_heuristics.compute_rule_heuristics(ruleset,
                                                           uncovered_instances)
             self._sort_ruleset(ruleset)
             found_rule = False
             for rule in ruleset:
-                result, uncovered_instances = self._rule_heuristics.rule_is_accurate(rule,
-                                                          uncovered_instances=uncovered_instances)
+                result, uncovered_instances = self._rule_heuristics.rule_is_accurate(
+                    rule,
+                    uncovered_instances=uncovered_instances)
                 if result:
                     return_ruleset.append(rule)
                     ruleset.rules[:] = [rule for rule in ruleset if
@@ -1069,6 +1073,67 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         # self._sort_ruleset(ruleset) #rulelat.py
 
     def _simplify_rulesets(self, ruleset):
+        """Simplifies the ruleset inplace using the pessimist error.
+
+        The function simplify the ruleset by iteratively removing conditions
+        that minimize the pessimistic error. If all the conditions of a rule
+        are removed, then the rule is discarded.
+
+        :param ruleset:
+        """
+        #uncovered_instances = self._rule_heuristics.ones
+        for rule in ruleset:
+            rule.A = self._simplify_conditions(set(rule.A))
+            # RuleSet([rule], self._global_condition_map).print_rules() #rulelat.py
+            base_line_error = self._compute_pessimistic_error(rule.A,
+                                                              rule.class_index)
+            min_error = 0
+            while min_error <= base_line_error and len(rule.A) > 0:
+                errors = [(cond,
+                           self._compute_pessimistic_error(
+                               rule.A.difference({cond}), rule.class_index),
+                           self._rule_heuristics.get_conditions_heuristics(
+                               [cond])[0],
+                           # new simplification cspi
+                           str(cond[1])) for cond
+                          in rule.A]
+
+                min_error_tup = min(errors, key=lambda tup: (tup[1],
+                                                             tup[2]['cov'],
+                                                             tup[2]['conf'][
+                                                                 rule.class_index],
+                                                             tup[2]['supp'][
+                                                                 rule.class_index],
+                                                             tup[3]))
+                # print('min: ', min_error_tup[0][1],
+                #       min_error_tup[1])
+                min_error = min_error_tup[1]
+                if min_error <= base_line_error:
+                    base_line_error = min_error
+                    min_error = 0
+                    rule_conds = set(rule.A)
+                    rule_conds.remove(min_error_tup[0])
+                    rule.A = frozenset(rule_conds)
+            # if len(rule.A) > 0:
+            #     _, uncovered_instances = self._rule_heuristics.get_conditions_heuristics(
+            #         rule.A)
+
+        # self._sort_ruleset(ruleset)
+        # self._rule_heuristics.compute_rule_heuristics(ruleset,
+        #                                               sequential_covering=True)
+
+        ruleset_len = len(ruleset.rules)
+
+        ruleset.rules[:] = [rule for rule in ruleset
+                            if 0 < len(rule.A)  # <= self.max_antecedents
+                            and rule.cov > self.cov_threshold
+                            and rule.conf > self.conf_threshold]
+
+        self._rule_heuristics.compute_rule_heuristics(ruleset,
+                                                      sequential_covering=True)
+        self._sort_ruleset(ruleset)
+
+    def _simplify_rulesets2(self, ruleset):
         """Simplifies the ruleset inplace using the pessimist error.
 
         The function simplify the ruleset by iteratively removing conditions
@@ -1159,7 +1224,8 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         self._sort_ruleset(ruleset)
         # self.rule_heuristics.compute_rule_heuristics(ruleset, sequential_coverage=True)
 
-    def _compute_pessimistic_error(self, conditions, class_index):
+    def _compute_pessimistic_error(self, conditions, class_index,
+                                   uncovered_instances=None):
         """ Computes a statistical correction to the training error to
         estimate the generalization error of one rule.
 
@@ -1176,18 +1242,21 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         rule (between 0 and 100)
         """
         if len(conditions) == 0:
-            e = (self.X_.shape[0] - popcount(self._rule_heuristics.training_bit_sets[
-                class_index])) / self.X_.shape[0]
+            e = (self.X_.shape[0] - popcount(
+                self._rule_heuristics.training_bit_sets[
+                    class_index])) / self.X_.shape[0]
             return 100 * _pessimistic_error_rate(self.X_.shape[0], e, 1.15)
         # cov, class_cov = self.rule_heuristics.get_conditions_heuristics(conditions, return_set_size=True)
         heuristics_dict, _ = self._rule_heuristics.get_conditions_heuristics(
-            conditions)
+            conditions, uncovered_mask=uncovered_instances)
 
         # print(heuristics_dict['cov_set'][-1])
         # if not isinstance(heuristics_dict['cov_set'][-1],int):
         #     stop =[]
-        total_instances = popcount(heuristics_dict['cov_set'][-1])
-        accurate_instances = popcount(heuristics_dict['cov_set'][class_index])
+        total_instances = heuristics_dict['cov_count']
+        # popcount(heuristics_dict['cov_set'][-1])
+        accurate_instances = heuristics_dict['class_cov_count'][class_index]
+        # popcount(heuristics_dict['cov_set'][class_index])
 
         error_instances = total_instances - accurate_instances
         alpha_half = 1.15  # 25 % confidence for C4.5
@@ -1213,7 +1282,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         all_covered = False
         if uncovered_instances.sum() == 0:
             uncovered_dist = np.array(
-                [self._rule_heuristics.training_bit_sets[i].count() for i in
+                [popcount(self._rule_heuristics.training_bit_sets[i]) for i in
                  range(len(self.classes_))])
             all_covered = True
         else:

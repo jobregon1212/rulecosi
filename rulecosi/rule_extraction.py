@@ -194,7 +194,8 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             split_value = threshold[node_index]
             if abs(split_value) < self.float_threshold:
                 split_value = copysign(self.float_threshold, split_value)
-                print(split_value)
+                # split_value=0
+                # print(split_value)
             new_condition_left = Condition(feature[node_index], op_left,
                                            # threshold[node_index],
                                            split_value,
@@ -748,8 +749,8 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
     """
 
-    def __init__(self, _ensemble, _column_names, classes_, X, y):
-        super().__init__(_ensemble, _column_names, classes_, X, y)
+    def __init__(self, _ensemble, _column_names, classes_, X, y, float_threshold):
+        super().__init__(_ensemble, _column_names, classes_, X, y,float_threshold)
         self._splits = None
         self._leaf_nodes = None
 

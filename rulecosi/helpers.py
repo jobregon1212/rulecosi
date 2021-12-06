@@ -91,3 +91,52 @@ def count_keys(dict_, key):
     """
     return (key in dict_) + sum(count_keys(v, key) for v in dict_.values() if isinstance(v, dict))
 
+# taken from https://stackoverflow.com/questions/67655001/how-to-utilize-every-bit-of-a-bytearray-in-python
+class BitArray:
+    def __init__(self, size):
+        self.size = size
+        self.bytearray = bytearray((size + 7) >> 3)
+
+    def clear(self):
+        ba = self.bytearray
+        for i in range(len(ba)):
+            ba[i] = 0
+
+    def get_bit(self, bit_ix):
+        if not isinstance(bit_ix, int):
+            raise IndexError("bit array index not an int")
+
+        if bit_ix < 0 or bit_ix >= self.size:
+            raise IndexError("bit array index out of range")
+
+        byte_ix = bit_ix >> 3
+        bit_ix = bit_ix & 7
+        return (self.bytearray[byte_ix] >> bit_ix) & 1
+
+    def set_bit(self, bit_ix, val):
+        if not isinstance(bit_ix, int):
+            raise IndexError("bit array index not an int")
+
+        if bit_ix < 0 or bit_ix >= self.size:
+            raise IndexError("bit array index out of range")
+
+        if not isinstance(val, int):
+            raise ValueError("bit array value not an int")
+
+        if val not in (0, 1):
+            raise ValueError("bit array value must be 0 or 1")
+
+        byte_ix = bit_ix >> 3
+        bit_ix = bit_ix & 7
+        bit_val = 1 << bit_ix
+
+        if val:
+            self.bytearray[byte_ix] |= bit_val
+        else:
+            self.bytearray[byte_ix] &= ~bit_val
+
+    def __getitem__(self, key):
+        return self.get_bit(key)
+
+    def __setitem__(self, key, value):
+        self.set_bit(key, value)

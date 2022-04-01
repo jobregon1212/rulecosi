@@ -38,21 +38,30 @@ class RuleSet:
 
     """
 
-    def __init__(self, rules=None, condition_map=None, ruleset=None):
+    def __init__(self, rules=None, condition_map=None, ruleset=None,
+                 classes=None):
         if condition_map is None:
             condition_map = {}
         if rules is None:
             rules = []
+        if classes is None:
+            classes = np.array([0, 1])
+        if isinstance(classes[0], (list, tuple, np.ndarray)):
+            self.y_shape = len(classes[0])
+        else:
+            self.y_shape=1
         if ruleset is None:
             self.rules = rules
             self.condition_map = condition_map
             self.n_total_ant = 0
             self.n_uniq_ant = 0
+            self.classes = classes
         else:
             self.rules = ruleset.rules
             self.condition_map = ruleset.condition_map
             self.n_total_ant = ruleset.n_total_ant
             self.n_uniq_ant = ruleset.n_uniq_ant
+            self.classes = ruleset.classes
         self.geometric_mean_score = 0
         self.f1_score = 0
         self.accuracy_score = 0
@@ -147,6 +156,30 @@ class RuleSet:
             else:
                 self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
 
+    def compute_classification_performance_fast(self, y_pred, y_true, metric='gmean'):
+        """ Compute the classification performance measures of this RuleSet
+
+        :param  X : array-like, shape (n_samples, n_features)
+            The input samples.
+        :param y_true: array-like, shape (n_samples,)
+            The real target value
+        :param metric: string, default='gmean'
+           Metric that is computed for this RuleSet. Other accepted measures are:
+         - 'f1' for F-measure
+         - 'roc_auc' for AUC under the ROC curve
+         - 'accuracy' for Accuracy
+
+        """
+
+        if metric == 'gmean':
+            self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
+        elif metric == 'f1':
+            self.f1_score = f1_score(y_true, y_pred)
+        elif metric == 'accuracy':
+            self.accuracy_score = accuracy_score(y_true, y_pred)
+        else:
+            self.geometric_mean_score = geometric_mean_score(y_true, y_pred)
+
     def metric(self, metric='gmean'):
         """ Return the metric value of this RuleSet
 
@@ -238,11 +271,11 @@ class RuleSet:
 
         """
         if proba:
-            prediction = np.empty(
-                (X.shape[0], self.rules[0].class_dist.shape[0]))
+            prediction = np.zeros(
+                (X.shape[0], self.classes.shape[0]))
         else:
-            prediction = np.empty((X.shape[0], self.rules[0].y.shape[0]),
-                                  dtype=self.rules[0].y.dtype)
+            prediction = np.zeros((X.shape[0], self.y_shape),
+                                  dtype=self.classes[0].dtype)
 
         covered_mask = np.zeros((X.shape[0],),
                                 dtype=bool)  # records the records that are already covered by some rule

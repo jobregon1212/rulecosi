@@ -42,7 +42,6 @@ from sklearn.ensemble import RandomForestClassifier, BaggingClassifier
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import GradientBoostingRegressor
 
-from .helpers import one_bitarray
 from rulecosi.rules import Rule, RuleSet
 from .rule_extraction import RuleExtractorFactory, get_class_dist
 from .rule_heuristics import RuleHeuristics
@@ -271,9 +270,10 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
 
         self._simplify_rulesets(
             self.simplified_ruleset_)  ### change rulelat.py
-        self._add_default_rule(self.simplified_ruleset_)
-        self.simplified_ruleset_.compute_classification_performance(self.X_,
-                                                                    self.y_)
+        y_pred = self._add_default_rule(self.simplified_ruleset_)
+        self.simplified_ruleset_.compute_classification_performance_fast(y_pred,
+                                                                         self.y_,
+                                                                         self.metric)
         self.simplified_ruleset_.rules.pop()
         # else:
         #     self._simplify_rulesets(
@@ -343,7 +343,8 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         if self.verbose > 0:
             print(f'Finish combination process, adding default rule...')
 
-        self._add_default_rule(self.simplified_ruleset_)
+        _ = self._add_default_rule(self.simplified_ruleset_,
+                                      last_iteration=True)
         self.simplified_ruleset_.prune_condition_map()
         end_time = time.time()
         self.combination_time_ = end_time - start_time
@@ -403,7 +404,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def _add_default_rule(self, ruleset):
+    def _add_default_rule(self, ruleset, last_iteration):
         """ Add a default rule at the end of the ruleset depending different
         criteria
 
@@ -773,7 +774,8 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                 combined_rules.update(
                     self._combine_sliced_rulesets(s_ruleset1, s_ruleset2))
         combined_rules = RuleSet(list(combined_rules),
-                                 self._global_condition_map)
+                                 self._global_condition_map,
+                                 classes=self.classes_)
         self._sort_ruleset(combined_rules)
         return combined_rules
 
@@ -895,9 +897,9 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                 y_class_index = np.argmax(class_dist).item()
                 y = np.array([self.classes_[y_class_index]])
 
-                # if str(
-                #        self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
-                # self._remove_opposite_conditions(r1_AUr2_A, y_class_index)
+                if str(
+                       self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
+                    self._remove_opposite_conditions(r1_AUr2_A, y_class_index)
 
                 # new_cond_set = {(cond, self._global_condition_map[cond])
                 #                 for cond in r1_AUr2_A}
@@ -1024,7 +1026,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                            self._rule_heuristics.get_conditions_heuristics(
                                # {int(id_)})['conf'][class_index])
                                {(int(id_),
-                                 self._global_condition_map[int(id_)])})[
+                                 self._global_condition_map[int(id_)])})[0][
                                'conf'][class_index])
                           for id_
                           in conds]
@@ -1081,7 +1083,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
         :param ruleset:
         """
-        #uncovered_instances = self._rule_heuristics.ones
+        # uncovered_instances = self._rule_heuristics.ones
         for rule in ruleset:
             rule.A = self._simplify_conditions(set(rule.A))
             # RuleSet([rule], self._global_condition_map).print_rules() #rulelat.py
@@ -1267,7 +1269,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
         return 100 * _pessimistic_error_rate(total_instances, e, alpha_half)
 
-    def _add_default_rule(self, ruleset):
+    def _add_default_rule1(self, ruleset):
         """ Add a default rule at the end of the ruleset depending different
         criteria
 
@@ -1318,6 +1320,57 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
         return True
 
+    def _add_default_rule(self, ruleset, last_iteration=False):
+        """ Add a default rule at the end of the ruleset depending different
+        criteria
+
+        :param ruleset: ruleset R to which the default rule will be added
+        """
+
+        predictions, covered_instances = ruleset._predict(self.X_)
+        uncovered_instances = ~covered_instances
+
+        all_covered = False
+        if uncovered_instances.sum() == 0:
+            uncovered_dist = np.array(
+                [popcount(self._rule_heuristics.training_bit_sets[i]) for i in
+                 range(len(self.classes_))])
+            all_covered = True
+        else:
+            uncovered_labels = self.y_[uncovered_instances]
+            uncovered_dist = np.array(
+                [(uncovered_labels == class_).sum() for class_ in
+                 self.classes_])
+
+        default_class_idx = np.argmax(uncovered_dist)
+        predictions[uncovered_instances] = self.classes_[default_class_idx]
+        default_rule = Rule({},
+                            class_dist=uncovered_dist / uncovered_dist.sum(),
+                            y=np.array([self.classes_[default_class_idx]]),
+                            y_class_index=default_class_idx,
+                            classes=self.classes_, n_samples=uncovered_dist)
+        if not all_covered:
+            default_rule.cov = uncovered_instances.sum() / self.X_.shape[0]
+            default_rule.conf = uncovered_dist[
+                                    default_class_idx] / uncovered_instances.sum()
+            default_rule.supp = uncovered_dist[default_class_idx] / \
+                                self.X_.shape[0]
+        ruleset.rules.append(default_rule)
+
+        default_class = default_rule.y
+        # rule_deleted = False
+
+        if last_iteration:
+            if len(ruleset.rules) > 3:
+                while ruleset.rules[-2].y == default_class and len(
+                        ruleset.rules) > 3:
+                    # rule_deleted = True
+                    ruleset.rules.pop(-2)
+                    self._rule_heuristics.compute_rule_heuristics(ruleset,
+                                                                  sequential_covering=True)
+
+        return predictions
+
     def _evaluate_combinations(self, simplified_ruleset, combined_rules):
         """ Compare the performance of two rulesets and return the best one
 
@@ -1330,11 +1383,14 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         :return:the ruleset with best performance in accordance to the metric
         parameter
         """
-        rule_added = self._add_default_rule(combined_rules)
-        combined_rules.compute_classification_performance(self.X_, self.y_,
+        y_pred = self._add_default_rule(combined_rules)
+        # combined_rules.compute_classification_performance(self.X_, self.y_,
+        #                                                   self.metric)
+        combined_rules.compute_classification_performance_fast(y_pred, self.y_,
                                                           self.metric)
-        if rule_added:
-            combined_rules.rules.pop()
+
+        # if rule_added:
+        combined_rules.rules.pop()
 
         if combined_rules.metric(self.metric) > simplified_ruleset.metric(
                 self.metric):

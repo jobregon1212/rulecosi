@@ -140,7 +140,7 @@ class BaseRuleExtractor(metaclass=ABCMeta):
                                                     node_index=0,
                                                     condition_map=condition_map,
                                                     condition_set=set())
-        return RuleSet(extracted_rules, condition_map)
+        return RuleSet(extracted_rules, condition_map, classes=self.classes_)
 
     def recursive_extraction(self, tree_dict, tree_index=0, node_index=0,
                              condition_map=None, condition_set=None):

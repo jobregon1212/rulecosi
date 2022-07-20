@@ -588,8 +588,13 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
             # tree_dict['feature'][node_id] = int(tree['split'][1:])
             if not str.isdigit(tree['split']):
                 tree_dict['feature'][node_id] = \
-                np.where(self._column_names == tree['split'])[
-                    0].item()  # 2021/23/06 change, the split directly
+                    int(tree['split'].replace('f', ''))
+                # 2022/04/16 change obtain directly the feature index
+                # np.where(self._column_names == tree['split'])[
+                #     0].item()  # 2021/23/06 change, the split directly
+
+                # print('feature: ', tree['split'])
+                # print('node_id: ', tree_dict['feature'][node_id])
             else:
                 tree_dict['feature'][node_id] = int(
                     tree['split'])  # 2021/23/06 change, the split directly
@@ -749,8 +754,10 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
     """
 
-    def __init__(self, _ensemble, _column_names, classes_, X, y, float_threshold):
-        super().__init__(_ensemble, _column_names, classes_, X, y,float_threshold)
+    def __init__(self, _ensemble, _column_names, classes_, X, y,
+                 float_threshold):
+        super().__init__(_ensemble, _column_names, classes_, X, y,
+                         float_threshold)
         self._splits = None
         self._leaf_nodes = None
 

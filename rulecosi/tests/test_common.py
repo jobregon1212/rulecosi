@@ -6,7 +6,7 @@ from rulecosi import RuleCOSIClassifier
 
 
 @pytest.mark.parametrize(
-    "Estimator", [RuleCOSIClassifier]
+    "estimator", [RuleCOSIClassifier()]
 )
-def test_all_estimators(Estimator):
-    return check_estimator(Estimator)
+def test_all_estimators(estimator):
+    return check_estimator(estimator)

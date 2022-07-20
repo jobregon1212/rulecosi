@@ -23,12 +23,11 @@ import time
 from abc import abstractmethod, ABCMeta
 from ast import literal_eval
 from math import sqrt
-from sys import byteorder
 
 import numpy as np
 import pandas as pd
-from gmpy2 import popcount
-from scipy.special import expit, logsumexp
+
+import scipy.stats as st
 
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.base import clone, is_classifier, is_regressor
@@ -43,7 +42,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import GradientBoostingRegressor
 
 from rulecosi.rules import Rule, RuleSet
-from .rule_extraction import RuleExtractorFactory, get_class_dist
+from .rule_extraction import RuleExtractorFactory
 from .rule_heuristics import RuleHeuristics
 
 
@@ -89,7 +88,7 @@ def _ensemble_type(ensemble):
         raise NotImplementedError
 
 
-def _pessimistic_error_rate(N, e, z_alpha_half):
+def _statistical_error_estimate(N, e, z_alpha_half):
     """ Computes the statistical correction of the training error for
     estimating the generalization error.
 
@@ -118,10 +117,8 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                  tree_max_depth=3,
                  cov_threshold=0.0,
                  conf_threshold=0.5,
-                 m=None,
+                 c=0.25,
                  percent_training=None,
-                 min_samples=1,
-                 max_antecedents=5,
                  early_stop=0,
                  metric='f1',
                  float_threshold=-1e-6,
@@ -134,10 +131,8 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self.tree_max_depth = tree_max_depth
         self.cov_threshold = cov_threshold
         self.conf_threshold = conf_threshold
-        self.m = m
+        self.c = c
         self.percent_training = percent_training
-        self.min_samples = min_samples
-        self.max_antecedents = max_antecedents
         self.early_stop = early_stop
         self.metric = metric
         self.float_threshold = float_threshold
@@ -145,18 +140,10 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         self.random_state = random_state
         self.verbose = verbose
 
-        self._rule_extractor = None
-        self._rule_heuristics = None
-        self._rule_simplifier = None
-        self._base_ens_type = None
-        self._weights = None
-        self._global_condition_map = None
-        self._bad_combinations = None
-        self._good_combinations = None
-        self._early_stop_cnt = 0
-        self._training_variance = 0
+    def _more_tags(self):
+        return {'binary_only': True}
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y):
         """ Combine and simplify the decision trees from the base ensemble
         and builds a rule-based classifier using the training set (X,y)
 
@@ -168,13 +155,22 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         y : array-like, shape (n_samples,)
             The target values. An array of int.
 
-        sample_weight: Currently this is not supported and it is here just
-        for compatibility reasons
+
 
         Returns
         -------
         self : object
         """
+        self._rule_extractor = None
+        self._rule_heuristics = None
+        # self._rule_simplifier = None
+        self._base_ens_type = None
+        self._weights = None
+        self._global_condition_map = None
+        self._bad_combinations = None
+        self._good_combinations = None
+        self._early_stop_cnt = 0
+        self.alpha_half_ = None
 
         self.X_ = None
         self.y_ = None
@@ -189,10 +185,12 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         if self.column_names is None:
             if isinstance(X, pd.DataFrame):
                 self.column_names = X.columns
-
         X, y = check_X_y(X, y)
+
         # Store the classes seen during fit
         self.classes_ = unique_labels(y)
+
+        self.alpha_half_ = st.norm.ppf(1 - (self.c / 2))
 
         if self.percent_training is None:
             self.X_ = X
@@ -202,84 +200,101 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                                           test_size=(1 - self.percent_training),
                                           shuffle=True, stratify=y,
                                           random_state=self.random_state)
-            # sub_idx = np.random.choice(X.shape[0],
-            #                            int(X.shape[0]*self.percent_training),
-            #                            replace=False)
             self.X_ = x
             self.y_ = y
 
-        self._training_variance = self.X_.var()
         if self.n_estimators is None or self.n_estimators < 2:
             raise ValueError(
-                "Parameter n_estimators should be at least 2 for using the RuleCOSI method.")
+                "Parameter n_estimators should be at "
+                "least 2 for using the RuleCOSI method.")
 
         if self.verbose > 0:
             print('Validating original ensemble...')
         try:
-            self._base_ens_type = _ensemble_type(self.base_ensemble)
+            if self.base_ensemble is None:
+                self.base_ensemble_ = GradientBoostingClassifier(
+                    n_estimators=self.n_estimators,
+                    max_depth=self.tree_max_depth,
+                    random_state=self.random_state)
+            else:
+                self.base_ensemble_ = self.base_ensemble
+            self._base_ens_type = _ensemble_type(self.base_ensemble_)
         except NotImplementedError:
             print(
-                f'Base ensemble of type {type(self.base_ensemble).__name__} is not supported.')
+                f'Base ensemble of type {type(self.base_ensemble_).__name__} '
+                f'is not supported.')
         try:
-            check_is_fitted(self.base_ensemble)
+            check_is_fitted(self.base_ensemble_)
             self.ensemble_training_time_ = 0
             if self.verbose > 0:
                 print(
-                    f'{type(self.base_ensemble).__name__} already trained, ignoring n_estimators and '
+                    f'{type(self.base_ensemble_).__name__} already trained, '
+                    f'ignoring n_estimators and '
                     f'tree_max_depth parameters.')
         except NotFittedError:
-            self.base_ensemble = self._validate_and_create_base_ensemble()
+            self.base_ensemble_ = self._validate_and_create_base_ensemble()
             if self.verbose > 0:
                 print(
-                    f'Training {type(self.base_ensemble).__name__} base ensemble...')
+                    f'Training {type(self.base_ensemble_).__name__} '
+                    f'base ensemble...')
             start_time = time.time()
-            self.base_ensemble.fit(X, y, sample_weight=sample_weight)
+            self.base_ensemble_.fit(X, y)
             end_time = time.time()
             self.ensemble_training_time_ = end_time - start_time
             if self.verbose > 0:
                 print(
-                    f'Finish training {type(self.base_ensemble).__name__} base ensemble'
+                    f'Finish training {type(self.base_ensemble_).__name__} '
+                    f'base ensemble'
                     f' in {self.ensemble_training_time_} seconds.')
+
         start_time = time.time()
 
         # First step is extract the rules
         self._rule_extractor = RuleExtractorFactory.get_rule_extractor(
-            self.base_ensemble, self.column_names,
+            self.base_ensemble_, self.column_names,
             self.classes_, self.X_, self.y_, self.float_threshold)
         if self.verbose > 0:
             print(
-                f'Extracting rules from {type(self.base_ensemble).__name__} base ensemble...')
-        self.original_rulesets_, self._global_condition_map = self._rule_extractor.extract_rules()
-        processed_rulesets = copy.copy(self.original_rulesets_)
-        # processed_rulesets = self.original_rulesets_
+                f'Extracting rules from {type(self.base_ensemble_).__name__} '
+                f'base ensemble...')
+        self.original_rulesets_, \
+        self._global_condition_map = self._rule_extractor.extract_rules()
+        processed_rulesets = copy.deepcopy(self.original_rulesets_)
 
         # We create the heuristics object which will compute all the
         # heuristics related measures
         self._rule_heuristics = RuleHeuristics(X=self.X_, y=self.y_,
                                                classes_=self.classes_,
-                                               condition_map=self._global_condition_map,
-                                               # cov_threshold=self.cov_threshold,
-                                               conf_threshold=self.conf_threshold,
-                                               min_samples=self.min_samples)
+                                               condition_map=
+                                               self._global_condition_map,
+                                               cov_threshold=self.cov_threshold,
+                                               conf_threshold=
+                                               self.conf_threshold)
         if self.verbose > 0:
             print(f'Initializing sets and computing condition map...')
         self._initialize_sets()
+
+        if str(
+                self.base_ensemble_.__class__) == \
+                "<class 'catboost.core.CatBoostClassifier'>":
+            for ruleset in processed_rulesets:
+                for rule in ruleset:
+                    new_A = self._remove_opposite_conditions(set(rule.A),
+                                                             rule.class_index)
+                    rule.A = new_A
+
+        for ruleset in processed_rulesets:
+            self._rule_heuristics.compute_rule_heuristics(
+                ruleset, recompute=True)
         self.simplified_ruleset_ = processed_rulesets[0]
-        self._rule_heuristics.compute_rule_heuristics(self.simplified_ruleset_)
-        # if str(self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
 
         self._simplify_rulesets(
-            self.simplified_ruleset_)  ### change rulelat.py
+            self.simplified_ruleset_)
         y_pred = self._add_default_rule(self.simplified_ruleset_)
-        self.simplified_ruleset_.compute_classification_performance_fast(y_pred,
-                                                                         self.y_,
-                                                                         self.metric)
+        self.simplified_ruleset_.compute_class_perf_fast(y_pred,
+                                                         self.y_,
+                                                         self.metric)
         self.simplified_ruleset_.rules.pop()
-        # else:
-        #     self._simplify_rulesets(
-        #         self.simplified_ruleset_)  ### change rulelat.py
-        #     self.simplified_ruleset_.print_rules() #rulelat.py
-        #     self.simplified_ruleset_.compute_classification_performance(self.X_, self.y_)
 
         self.n_combinations_ = 0
 
@@ -288,18 +303,20 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
             early_stop = int(len(processed_rulesets) * self.early_stop)
         else:
             early_stop = len(processed_rulesets)
-        # no_combinations = True  # flag to control if there are no combinations registered
+
         if self.verbose > 0:
             print(f'Start combination process...')
             if self.verbose > 1:
                 print(
-                    f'Iteration {0}, Rule size: {len(self.simplified_ruleset_.rules)}, '
-                    f'{self.metric}: {self.simplified_ruleset_.metric(self.metric)}')
+                    f'Iteration {0}, Rule size: '
+                    f'{len(self.simplified_ruleset_.rules)}, '
+                    f'{self.metric}: '
+                    f'{self.simplified_ruleset_.metric(self.metric)}')
         for i in range(1, len(processed_rulesets)):
             # combine the rules
-            self._rule_heuristics.compute_rule_heuristics(processed_rulesets[i])
             combined_rules = self._combine_rulesets(self.simplified_ruleset_,
                                                     processed_rulesets[i])
+
             if self.verbose > 1:
                 print(f'Iteration{i}:')
                 print(
@@ -308,17 +325,15 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
             self._sequential_covering_pruning(combined_rules)
             if self.verbose > 1:
                 print(
-                    f'\tSequential covering pruned rules size: {len(combined_rules.rules)} rules')
+                    f'\tSequential covering pruned rules size: '
+                    f'{len(combined_rules.rules)} rules')
             # simplify rules
-            # combined_rules.print_rules()  # rulelat.py
             self._simplify_rulesets(combined_rules)
-            # combined_rules.print_rules()  # rulelat.py
             if self.verbose > 1:
                 print(
-                    f'\tSimplified rules size: {len(combined_rules.rules)} rules')
-            # if self.verbose > 1:
-            #     print(
-            #         f'\tCombined rules size: {len(combined_rules.rules)} rules')
+                    f'\tSimplified rules size: '
+                    f'{len(combined_rules.rules)} rules')
+
             # skip if the combined rules are empty
             if len(combined_rules.rules) == 0:
                 if self.verbose > 1:
@@ -331,11 +346,6 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                 break
             if self.simplified_ruleset_.metric() == 1:
                 break
-            # if best_ruleset=='comb':
-            #    no_combinations = False
-            # print('#################################')
-        # if no_combinations:  # if any combination was successful, we just simplify the first ruleset
-        # self._simplify_rulesets(self.simplified_ruleset_)
 
         self.simplified_ruleset_.rules[:] = [rule for rule in
                                              self.simplified_ruleset_.rules
@@ -343,19 +353,18 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         if self.verbose > 0:
             print(f'Finish combination process, adding default rule...')
 
-        _ = self._add_default_rule(self.simplified_ruleset_,
-                                      last_iteration=True)
+        _ = self._add_default_rule(self.simplified_ruleset_)
         self.simplified_ruleset_.prune_condition_map()
         end_time = time.time()
         self.combination_time_ = end_time - start_time
         if self.verbose > 0:
             print(
-                f'R size: {len(self.simplified_ruleset_.rules)}, {self.metric}: '
-                f'{self.simplified_ruleset_.metric(self.metric)}')
+                f'R size: {len(self.simplified_ruleset_.rules)}, {self.metric}:'
+                f' {self.simplified_ruleset_.metric(self.metric)}')
 
     def _validate_and_create_base_ensemble(self):
-        """ Validate the parameter of base ensemble and if it is None, it set the default ensemble,
-            GradientBoostingClassifier.
+        """ Validate the parameter of base ensemble and if it is None,
+        it set the default ensemble GradientBoostingClassifier.
 
         """
 
@@ -364,35 +373,90 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                              "got {0}.".format(self.n_estimators))
         if self.base_ensemble is None:
             if is_classifier(self):
-                self.base_ensemble = GradientBoostingClassifier(
+                self.base_ensemble_ = GradientBoostingClassifier(
                     n_estimators=self.n_estimators,
                     max_depth=self.tree_max_depth,
                     random_state=self.random_state)
             elif is_regressor(self):
-                self.base_ensemble = GradientBoostingRegressor(
+                self.base_ensemble_ = GradientBoostingRegressor(
                     n_estimators=self.n_estimators,
                     max_depth=self.tree_max_depth,
                     random_state=self.random_state)
             else:
                 raise ValueError(
-                    "You should choose an original classifier/regressor ensemble to use RuleCOSI method.")
-        self.base_ensemble.n_estimators = self.n_estimators
+                    "You should choose an original classifier/regressor "
+                    "ensemble to use RuleCOSI method.")
+        self.base_ensemble_.n_estimators = self.n_estimators
         if str(
-                self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
-            self.base_ensemble.set_params(n_estimators=self.n_estimators,
-                                          depth=self.tree_max_depth)
-        elif isinstance(self.base_ensemble, BaggingClassifier):
+                self.base_ensemble_.__class__) == \
+                "<class 'catboost.core.CatBoostClassifier'>":
+            self.base_ensemble_.set_params(n_estimators=self.n_estimators,
+                                           depth=self.tree_max_depth)
+        elif isinstance(self.base_ensemble_, BaggingClassifier):
             if is_classifier(self):
-                self.base_ensemble.base_estimator = DecisionTreeClassifier(
+                self.base_ensemble_.base_estimator = DecisionTreeClassifier(
                     max_depth=self.tree_max_depth,
                     random_state=self.random_state)
             else:
-                self.base_ensemble.base_estimator = DecisionTreeRegressor(
+                self.base_ensemble_.base_estimator = DecisionTreeRegressor(
                     max_depth=self.tree_max_depth,
                     random_state=self.random_state)
         else:
-            self.base_ensemble.max_depth = self.tree_max_depth
-        return clone(self.base_ensemble)
+            self.base_ensemble_.max_depth = self.tree_max_depth
+        return clone(self.base_ensemble_)
+
+    def _remove_opposite_conditions(self, conditions, class_index):
+        """ Removes conditions that have disjoint regions and will make a
+        rule to be discarded because it would have null coverage.
+
+            This function is used with the trees generated with CatBoost
+            algorithm, which are called oblivious trees. This trees share the
+            same splits among entire levels. So The rules generated when
+            combining tend to create many rules with null coverage, so this
+            function helps to avoid this problem and explore better the
+            covered feature space combination.
+
+        :param conditions: set of conditions' ids
+
+        :param class_index: predicted class of the rule created with the set of
+        conditions
+
+        :return: set of conditions with no opposite conditions
+        """
+
+        att_op_list = [[cond[1].att_index,
+                        cond[1].op.__name__, cond[0]]
+                       for cond in conditions]
+
+        att_op_list = np.array(att_op_list, dtype=object)
+        att_op_list = att_op_list[att_op_list[:, 0].argsort()]
+
+        # Second part is to remove opposite operator
+        # conditions (e.g. att1>=5  att1<5)
+        # create list for removing opposite conditions
+        dict_opp_cond = {
+            i[0]: att_op_list[(att_op_list == i[0]).nonzero()[0]][:, 2]
+            for i in att_op_list}
+        # create generator to traverse just conditions with the same att_index
+        # and different operator that appear
+        # more than once
+        gen_opp_cond = ((att, conds) for (att, conds) in dict_opp_cond.items()
+                        if len(conds) > 1)
+        for (_, conds) in gen_opp_cond:
+            list_conds = [(int(id_),
+                           self._rule_heuristics.get_conditions_heuristics(
+                               {(int(id_),
+                                 self._global_condition_map[int(id_)])})[0][
+                               'supp'][class_index])
+                          for id_
+                          in conds]
+            best_condition = max(list_conds, key=lambda item: item[1])
+            list_conds.remove(
+                best_condition)  # remove the edge condition of the box from
+            # the list so it will remain
+            [conditions.remove((cond[0], self._global_condition_map[cond[0]]))
+             for cond in list_conds]
+        return frozenset(conditions)
 
     @abstractmethod
     def _initialize_sets(self):
@@ -404,7 +468,7 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def _add_default_rule(self, ruleset, last_iteration):
+    def _add_default_rule(self, ruleset):
         """ Add a default rule at the end of the ruleset depending different
         criteria
 
@@ -506,32 +570,43 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
     cov_threshold: float, default=0.0
         Coverage threshold of a rule to be considered for further combinations.
-        The greater the value the more rules are discarded. Default value is
-        0.0, which it only discards rules with null coverage.
+        (beta in the paper)The greater the value the more rules are discarded.
+        Default value is 0.0, which it only discards rules with null coverage.
 
     conf_threshold: float, default=0.5
         Confidence or rule accuracy threshold of a rule to be considered for
-        further combinations. The greater the value, the more rules are
-        discarded. Rules with high confidence are accurate rules. Default value
-        is 0.5, which represents rules with higher than random guessing
-        accuracy.
+        further combinations (alpha in the paper). The greater the value, the
+        more rules are discarded. Rules with high confidence are accurate rules.
+        Default value is 0.5, which represents rules with higher than random
+        guessing accuracy.
 
-    min_samples: int, default=1
-        The minimum number of samples required to be at rule in the simplified
-        ruleset.
+    c= float, 0.25
+        Confidence level for estimating the upper bound of the statistical
+        correction of the rule error. It is used for the generalization process.
 
-    early_stop: float, default=0.30
+    percent_training= float, default=None
+        Percentage of the training used for the combination and simplification
+        process. If None, all the training data is usded. This is useful when
+        the training data is too big because it helps to accelerate the
+        simplification process. (experimental)
+
+    early_stop: float, default=0
         This parameter allows the algorithm to stop if a certain amount of
         iterations have passed without improving the metric. The amount is
         obtained from the truncated integer of n_estimators * ealry_stop.
 
-    metric: string, default='gmean'
+    metric: string, default='f1'
         Metric that is optimized in the combination process. The default is
-        gmean because the algorithm was developed specially for imbalanced
-        classification problems. Other accepted measures are:
-         - 'f1' for F-measure
+        f1. Other accepted measures are:
          - 'roc_auc' for AUC under the ROC curve
          - 'accuracy' for Accuracy
+
+    rule_order: string, default 'supp'
+        Defines the way in the rules are ordered on each iteration. 'cov' order
+        the rules first by coverage and 'conf' order the rules first by
+        confidence or rule accuracy. 'supp' orders the rule by their support.
+        This parameter affects the combination process and can be chosen
+        conveniently depending on the desired results.
 
     column_names: array of string, default=None
         Array of strings with the name of the columns in the data. This is
@@ -542,18 +617,12 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         does not have any random process, so it affects only the ensemble
         training.
 
-    rule_order: string, default 'cov'
-        Defines the way in the rules are ordered on each iteration. 'cov' order
-        the rules first by coverage and 'conf' order the rules first by
-        confidence or rule accuracy. This parameter affects the combination
-        process and can be chosen conveniently depending the desired results.
-
     verbose: int, default=0
         Controls the output of the algorithm during the combination process. It
          can have the following values:
         - 0 is silent
         - 1 output only the main stages of the algorithm
-        - 2 output information for each iteration
+        - 2 output detailed information for each iteration
 
     Attributes
     ----------
@@ -615,26 +684,22 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                  tree_max_depth=3,
                  cov_threshold=0.0,
                  conf_threshold=0.5,
-                 m=None,
+                 c=0.25,
                  percent_training=None,
-                 min_samples=1,
-                 max_antecedents=5,
-                 early_stop=0.30,
+                 early_stop=0,
                  metric='f1',
+                 rule_order='supp',
                  float_threshold=1e-6,
                  column_names=None,
                  random_state=None,
-                 rule_order='conf',
                  verbose=0
                  ):
         super().__init__(base_ensemble=base_ensemble,
                          n_estimators=n_estimators,
                          tree_max_depth=tree_max_depth,
                          cov_threshold=cov_threshold,
-                         m=m,
+                         c=c,
                          percent_training=percent_training,
-                         min_samples=min_samples,
-                         max_antecedents=max_antecedents,
                          early_stop=early_stop,
                          metric=metric,
                          float_threshold=float_threshold,
@@ -646,7 +711,7 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         self.conf_threshold = conf_threshold
         self.rule_order = rule_order
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y):
         """ Combine and simplify the decision trees from the base ensemble
         and builds a rule-based classifier using the training set (X,y)
 
@@ -658,16 +723,18 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         y : array-like, shape (n_samples,)
             The target values. An array of int.
 
-        sample_weight: Currently this is not supported and it is here just for
-        compatibility reasons
+
 
         Returns
         -------
         self : object
         """
-        super().fit(X, y, sample_weight=sample_weight)
+        super().fit(X, y)
 
         return self
+
+    def _more_tags(self):
+        return {'binary_only': True}
 
     def predict(self, X):
         """ Predict classes for X.
@@ -692,6 +759,11 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
         # Input validation
         X = check_array(X)
+        if self.X_.shape[1] != X.shape[1]:
+            raise ValueError(
+                f"X contains {X.shape[1]} features, but RuleCOSIClassifier was"
+                f" fitted with {self.X_.shape[1]}."
+            )
 
         return self.simplified_ruleset_.predict(X)
 
@@ -717,6 +789,11 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
         # Input validation
         X = check_array(X)
+        if self.X_.shape[1] != X.shape[1]:
+            raise ValueError(
+                f"X contains {X.shape[1]} features, but RuleCOSIClassifier was"
+                f" fitted with {self.X_.shape[1]}."
+            )
         return self.simplified_ruleset_.predict_proba(X)
 
     def _initialize_sets(self):
@@ -739,16 +816,16 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         if self.rule_order == 'cov':
             ruleset.rules.sort(key=lambda rule: (rule.cov, rule.conf, rule.supp,
                                                  -1 * len(rule.A),
-                                                 rule.__str__()), reverse=True)
+                                                 rule.str), reverse=True)
 
         elif self.rule_order == 'conf':
             ruleset.rules.sort(key=lambda rule: (rule.conf, rule.cov, rule.supp,
                                                  -1 * len(rule.A),
-                                                 rule.__str__()), reverse=True)
+                                                 rule.str), reverse=True)
         elif self.rule_order == 'supp':
             ruleset.rules.sort(key=lambda rule: (rule.supp, rule.conf, rule.cov,
                                                  -1 * len(rule.A),
-                                                 rule.__str__()), reverse=True)
+                                                 rule.str), reverse=True)
 
     def _combine_rulesets(self, ruleset1, ruleset2):
         """ Combine all the rules belonging to ruleset1 and ruleset2 using
@@ -795,47 +872,31 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
             for r2 in s_ruleset2:
                 if len(r1.A) == 0 or len(r2.A) == 0:
                     continue
-                self.n_combinations_ += 1  # count the actual number of combinations
-                # r1_AUr2_A = set({cond[0] for cond in r1.A}).union(
-                #     {cond[0] for cond in r2.A})
+                heuristics_dict = self._rule_heuristics.combine_heuristics(
+                    r1.heuristics_dict, r2.heuristics_dict)
+
                 r1_AUr2_A = set(r1.A.union(r2.A))
+
+                if heuristics_dict['cov'] == 0:
+                    self._bad_combinations.add(frozenset(r1_AUr2_A))
+                    continue
 
                 if frozenset(r1_AUr2_A) in self._bad_combinations:
                     continue
-                #
-                # heuristics_dict = self._rule_heuristics.get_conditions_heuristics(
-                #     r1_AUr2_A)
-                # if heuristics_dict['cov'] > 0:
-                #     # local_N = np.array(
-                #     #     [heuristics_dict['cov_set'][i].count() for i in
-                #     #      range(len(self.classes_))]).sum()
-                #     local_N = heuristics_dict['cov_set'][
-                #         len(self.classes_)].count()
-                #     rule_class_dist = np.array(
-                #         [heuristics_dict['cov_set'][i].count() for i in
-                #          range(len(self.classes_))]) / local_N
-                #     local_variance = self.X_[heuristics_dict['cov_set'][
-                #         len(self.classes_)].tolist()].var()
-                #     m = local_variance / self._training_variance
-                #
-                # else:
-                #     # self._bad_combinations.add(frozenset(r1_AUr2_A))
-                #     local_N = 0
-                #     local_variance = 0
-                #     m = 1
-                #     rule_class_dist = np.array(
-                #         [0 for i in range(len(self.classes_))])
 
-                # create the new rule and compute class distribution and predicted class
+                self.n_combinations_ += 1  # count the actual
+                # number of combinations
+
+                # create the new rule and compute class distribution
+                # and predicted class
                 weight = None
-                # if self._base_ens_type == 'bagging':
+
                 if self._weights is None:
                     ens_class_dist = np.mean(
                         [r1.ens_class_dist, r2.ens_class_dist],
                         axis=0).reshape(
                         (len(self.classes_),))
                 else:
-                    # print('has weights')  # xgbchange
                     ens_class_dist = np.average(
                         [r1.ens_class_dist, r2.ens_class_dist],
                         axis=0,
@@ -843,67 +904,12 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                                  r2.weight]).reshape(
                         (len(self.classes_),))
                     weight = (r1.weight() + r2.weight) / 2
-                # y_class_index = np.argmax(ens_class_dist).item()
-                # y = np.array([self.classes_[y_class_index]])
                 logit_score = 0
-                # elif self._base_ens_type == 'gbt':
-                #     logit_score = r1.logit_score + r2.logit_score
-                #     if len(self.classes_) == 2:
-                #         raw_to_proba = expit(logit_score)
-                #         ens_class_dist = get_class_dist(raw_to_proba)
-                #         # ens_class_dist = np.array(
-                #         #     [raw_to_proba.item(), 1 - raw_to_proba.item()])
-                #     else:
-                #         ens_class_dist = logit_score - logsumexp(logit_score)
 
-                # class_dist = np.mean([r1.class_dist, r2.class_dist],
-                #                      axis=0).reshape(
-                #     (len(self.classes_),))  # xgbchang
-
-                # testing with smoothing the probability
-                # ========================================
-                # rule_class_dist = (r1.n_samples + r2.n_samples) / (
-                #         r1.n_samples + r2.n_samples).sum()
-
-                # ens_class_dist = np.average([ens_class_dist, rule_class_dist],
-                #                             axis=0)
-
-                # ens_class_dist = np.average([ens_class_dist, rule_class_dist],
-                #                             axis=0,
-                #                             weights=[self._weight_function(
-                #                                 local_N),
-                #                                 1 - self._weight_function(
-                #                                     local_N)])
-
-                # ============================================
-
-                # y_class_index = np.argmax(ens_class_dist).item()
-                # y = np.array([self.classes_[y_class_index]])
-                # else:
-                #     logit_score = 0
-                #     ens_class_dist = np.mean(
-                #         [r1.ens_class_dist, r2.ens_class_dist],
-                #         axis=0).reshape(
-                #         (len(self.classes_),))
-                # elif self._base_ens_type == 'regressor':
-                #     y = np.mean([r1.y, r2.y], axis=0)
-                # w_r = self._weight_function(local_N, m)
-                # print(ens_weight)
-                # class_dist = np.average([rule_class_dist, ens_class_dist],
-                #                         axis=0,
-                #                         weights=[w_r,
-                #                                  1 - w_r])
                 class_dist = ens_class_dist
                 y_class_index = np.argmax(class_dist).item()
                 y = np.array([self.classes_[y_class_index]])
 
-                if str(
-                       self.base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
-                    self._remove_opposite_conditions(r1_AUr2_A, y_class_index)
-
-                # new_cond_set = {(cond, self._global_condition_map[cond])
-                #                 for cond in r1_AUr2_A}
-                # new_rule = Rule(frozenset(new_cond_set), class_dist=class_dist,
                 new_rule = Rule(frozenset(r1_AUr2_A),
                                 class_dist=class_dist,
                                 ens_class_dist=ens_class_dist,
@@ -912,31 +918,15 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                                 logit_score=logit_score, y=y,
                                 y_class_index=y_class_index,
                                 classes=self.classes_, weight=weight)
-                # new_rule = Rule(frozenset(r1_AUr2_A), class_dist=class_dist, logit_score=logit_score, y=y,
-                #                 y_class_index=y_class_index, classes=self.classes_, weight=weight)
 
-                # check if the combination was null before, if it was we just
-                # skip it
-                # if new_rule in self._bad_combinations:
-                #     continue
-                # if the combination was a good one before, we just add the
-                # combination to the rules
                 if new_rule in self._good_combinations:
                     heuristics_dict = self._good_combinations[new_rule]
                     new_rule.set_heuristics(heuristics_dict)
                     combined_rules.add(new_rule)
                 else:
-                    heuristics_dict, _ = self._rule_heuristics.get_conditions_heuristics(
-                        r1_AUr2_A)
-                    # new_cond_set)
                     new_rule.set_heuristics(heuristics_dict)
-                    # new_rule_cov, new_rule_conf_supp = self.rule_heuristics.get_conditions_heuristics(r1_AUr2_A)
-                    # new_rule.cov = new_rule_cov
-                    # new_rule.conf = new_rule_conf_supp[y_class_index][0]
-                    # new_rule.supp = new_rule_conf_supp[y_class_index][1]
-
-                    # if new_rule.cov > self.cov_threshold and \
-                    if new_rule.conf > self.conf_threshold:
+                    if new_rule.conf > self.conf_threshold and \
+                            new_rule.cov > self.cov_threshold:
                         combined_rules.add(new_rule)
                         self._good_combinations[new_rule] = heuristics_dict
                     else:
@@ -960,15 +950,17 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         cond_map = self._global_condition_map  # just for readability
         # create list with this format ["(att_index, 'OPERATOR')", 'cond_id']
         att_op_list = [
-            [str((cond[1].att_index, cond[1].op.__name__)), cond[0]]
+            [(cond[1].att_index, cond[1].op.__name__), cond[0]]
             for cond in conditions]
-        att_op_list = np.array(att_op_list)
-        # First part is to remove redundant conditions (e.g. att1>5 and att1> 10)
+        att_op_list = np.array(att_op_list, dtype=object)
+        # First part is to remove redundant conditions
+        # (e.g. att1>5 and att1> 10)
         # create list for removing redundant conditions
         dict_red_cond = {
-            str(i[0]): att_op_list[(att_op_list == i[0]).nonzero()[0]][:, 1]
+            i[0]: att_op_list[(att_op_list == i[0]).nonzero()[0]][:, 1]
             for i in att_op_list}
-        # create generator to traverse just conditions with the same att_index and operator that appear more than once
+        # create generator to traverse just conditions with the same att_index
+        # and operator that appear more than once
         gen_red_cond = ((att_op, conds) for (att_op, conds) in
                         dict_red_cond.items() if len(conds) > 1)
 
@@ -976,65 +968,16 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
             tup_att_op = literal_eval(att_op)
             list_conds = {cond_map[int(id_)] for id_ in conds}
             if tup_att_op[1] in ['lt', 'le']:
-                edge_condition = max(list_conds, key=lambda
+                edge_condition = min(list_conds, key=lambda
                     item: item.value)  # condition at the edge of the box
             if tup_att_op[1] in ['gt', 'ge']:
-                edge_condition = min(list_conds, key=lambda item: item.value)
+                edge_condition = max(list_conds, key=lambda item: item.value)
             list_conds.remove(
-                edge_condition)  # remove the edge condition of the box from the list, so it will remain
+                edge_condition)  # remove the edge condition of the box from
+            # the list, so it will remain
             # [conditions.remove(hash(cond)) for cond in list_conds]
             [conditions.remove((hash(cond), cond)) for cond in list_conds]
 
-        return frozenset(conditions)
-
-    def _remove_opposite_conditions(self, conditions, class_index):
-        """ Removes conditions that have disjoint regions and will make a
-        rule to be discarded because it would have null coverage.
-
-            This function is used with the trees generated with CatBoost
-            algorithm, which are called oblivious trees. This trees share the
-            same splits among entire levels. So The rules generated when
-            combining tend to create many rules with null coverage, so this
-            function helps to avoid this problem and explore better the
-            covered feature space combination.
-
-        :param conditions: set of conditions' ids
-
-        :param class_index: predicted class of the rule created with the set of
-        conditions
-
-        :return: set of conditions with no opposite conditions
-        """
-        # att_op_list = [[self._global_condition_map[cond].att_index,
-        #                 self._global_condition_map[cond].op.__name__, cond]
-        #                for cond in conditions]
-        att_op_list = [[cond[1].att_index,
-                        cond[1].op.__name__, cond[0]]
-                       for cond in conditions]
-        att_op_list = np.array(att_op_list)
-        # Second part is to remove opposite operator conditions (e.g. att1>=5  att1<5)
-        # create list for removing opposite conditions
-        dict_opp_cond = {
-            str(i[0]): att_op_list[(att_op_list == i[0]).nonzero()[0]][:, 2]
-            for i in att_op_list}
-        # create generator to traverse just conditions with the same att_index and different operator that appear
-        # more than once
-        gen_opp_cond = ((att, conds) for (att, conds) in dict_opp_cond.items()
-                        if len(conds) > 1)
-        for (_, conds) in gen_opp_cond:
-            list_conds = [(int(id_),
-                           self._rule_heuristics.get_conditions_heuristics(
-                               # {int(id_)})['conf'][class_index])
-                               {(int(id_),
-                                 self._global_condition_map[int(id_)])})[0][
-                               'conf'][class_index])
-                          for id_
-                          in conds]
-            best_condition = max(list_conds, key=lambda item: item[1])
-            list_conds.remove(
-                best_condition)  # remove the edge condition of the box from the list so it will remain
-            [conditions.remove((cond[0], self._global_condition_map[cond[0]]))
-             for cond in list_conds]
         return frozenset(conditions)
 
     def _sequential_covering_pruning(self, ruleset):
@@ -1051,28 +994,28 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         :return:
         """
         return_ruleset = []
-        uncovered_instances = self._rule_heuristics.ones
-        # uncovered_instances = int.from_bytes(np.ones(self.X_.shape[0])*np.uint8(255),byteorder=byteorder) #one_bitarray(self.X_.shape[0])
+        not_cov_samples = self._rule_heuristics.ones
         found_rule = True
         while len(
-                ruleset.rules) > 0 and popcount(
-            uncovered_instances) > 0 and found_rule:
+                ruleset.rules) > 0 and \
+                self._rule_heuristics.bitarray_.get_number_ones(
+                    not_cov_samples) > 0 \
+                and found_rule:
             self._rule_heuristics.compute_rule_heuristics(ruleset,
-                                                          uncovered_instances)
+                                                          not_cov_samples)
             self._sort_ruleset(ruleset)
             found_rule = False
             for rule in ruleset:
-                result, uncovered_instances = self._rule_heuristics.rule_is_accurate(
+                result, \
+                not_cov_samples = self._rule_heuristics.rule_is_accurate(
                     rule,
-                    uncovered_instances=uncovered_instances)
+                    not_cov_samples=not_cov_samples)
                 if result:
                     return_ruleset.append(rule)
-                    ruleset.rules[:] = [rule for rule in ruleset if
-                                        rule != return_ruleset[-1]]
+                    ruleset.rules.remove(rule)
                     found_rule = True
                     break
         ruleset.rules[:] = return_ruleset
-        # self._sort_ruleset(ruleset) #rulelat.py
 
     def _simplify_rulesets(self, ruleset):
         """Simplifies the ruleset inplace using the pessimist error.
@@ -1083,32 +1026,24 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
 
         :param ruleset:
         """
-        # uncovered_instances = self._rule_heuristics.ones
         for rule in ruleset:
             rule.A = self._simplify_conditions(set(rule.A))
-            # RuleSet([rule], self._global_condition_map).print_rules() #rulelat.py
+            rule.update_string_representation()
             base_line_error = self._compute_pessimistic_error(rule.A,
                                                               rule.class_index)
             min_error = 0
-            while min_error <= base_line_error and len(rule.A) > 0:
+            while min_error <= base_line_error and len(rule.A) > 0 \
+                    and base_line_error > 0:
                 errors = [(cond,
                            self._compute_pessimistic_error(
                                rule.A.difference({cond}), rule.class_index),
-                           self._rule_heuristics.get_conditions_heuristics(
-                               [cond])[0],
-                           # new simplification cspi
-                           str(cond[1])) for cond
+                           cond[1].str)
+                          for cond
                           in rule.A]
 
                 min_error_tup = min(errors, key=lambda tup: (tup[1],
-                                                             tup[2]['cov'],
-                                                             tup[2]['conf'][
-                                                                 rule.class_index],
-                                                             tup[2]['supp'][
-                                                                 rule.class_index],
-                                                             tup[3]))
-                # print('min: ', min_error_tup[0][1],
-                #       min_error_tup[1])
+                                                             tup[2]))
+
                 min_error = min_error_tup[1]
                 if min_error <= base_line_error:
                     base_line_error = min_error
@@ -1116,118 +1051,22 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
                     rule_conds = set(rule.A)
                     rule_conds.remove(min_error_tup[0])
                     rule.A = frozenset(rule_conds)
-            # if len(rule.A) > 0:
-            #     _, uncovered_instances = self._rule_heuristics.get_conditions_heuristics(
-            #         rule.A)
+                    rule.update_string_representation()
 
-        # self._sort_ruleset(ruleset)
-        # self._rule_heuristics.compute_rule_heuristics(ruleset,
-        #                                               sequential_covering=True)
-
-        ruleset_len = len(ruleset.rules)
+        self._rule_heuristics.compute_rule_heuristics(ruleset, recompute=True)
 
         ruleset.rules[:] = [rule for rule in ruleset
-                            if 0 < len(rule.A)  # <= self.max_antecedents
+                            if 0 < len(rule.A)
                             and rule.cov > self.cov_threshold
-                            and rule.conf > self.conf_threshold]
+                            and rule.conf > self.conf_threshold
+                            ]
 
         self._rule_heuristics.compute_rule_heuristics(ruleset,
                                                       sequential_covering=True)
         self._sort_ruleset(ruleset)
-
-    def _simplify_rulesets2(self, ruleset):
-        """Simplifies the ruleset inplace using the pessimist error.
-
-        The function simplify the ruleset by iteratively removing conditions
-        that minimize the pessimistic error. If all the conditions of a rule
-        are removed, then the rule is discarded.
-
-        :param ruleset:
-        """
-        for rule in ruleset:
-            rule.A = self._simplify_conditions(set(rule.A))
-            # RuleSet([rule], self._global_condition_map).print_rules() #rulelat.py
-            base_line_error = self._compute_pessimistic_error(rule.A,
-                                                              rule.class_index)
-            min_error = 0
-            while min_error <= base_line_error and len(rule.A) > 0:
-                # errors = [(cond, self._compute_pessimistic_error(rule.A.difference([cond]), rule.class_index))
-                #           for cond in rule.A]
-                errors = [(cond,
-                           self._compute_pessimistic_error(
-                               rule.A.difference({cond}), rule.class_index),
-                           self._rule_heuristics.get_conditions_heuristics(
-                               [cond])[0],
-                           str(cond[1])) for cond
-                          in rule.A]
-
-                # print([(err[0][1], err[1],
-                #         err[2]['cov'],
-                #         err[2]['conf'][rule.class_index],
-                #         err[2]['supp'][rule.class_index],
-                #         err[3]) for err
-                #        in sorted(errors, key=lambda tup: tup[3])])  # rulelat.py
-                # min_error_tup = min(errors, key=lambda tup: tup[1])
-                min_error_tup = min(errors, key=lambda tup: (tup[1],
-                                                             tup[2]['cov'],
-                                                             tup[2]['conf'][
-                                                                 rule.class_index],
-                                                             tup[2]['supp'][
-                                                                 rule.class_index],
-                                                             tup[3]))
-                # print('min: ', min_error_tup[0][1],
-                #       min_error_tup[1])
-                min_error = min_error_tup[1]
-                if min_error <= base_line_error:
-                    base_line_error = min_error
-                    min_error = 0
-                    rule_conds = set(rule.A)
-                    rule_conds.remove(min_error_tup[0])
-                    rule.A = frozenset(rule_conds)
-
-        # if len(ruleset.rules) > 1:
-        #     preds, covered_mask = ruleset._predict(self.X_)
-        #     preds = np.ravel(preds)
-        #
-        #     total_instances = preds[covered_mask].shape[0]
-        #     accurate_instances = (
-        #                 preds[covered_mask] != self.y_[covered_mask]).sum()
-        #     error_rate = accurate_instances / total_instances
-        #
-        #     base_line_error = _pessimistic_error_rate(total_instances,error_rate, 1.15)
-        #     min_error = 0
-        #     while min_error <= base_line_error and len(ruleset.rules) > 1:
-        #         deleted_rule = ruleset.rules.pop(-1)
-        #         preds, covered_mask = ruleset._predict(self.X_)
-        #         preds = np.ravel(preds)
-        #
-        #         total_instances = preds[covered_mask].shape[0]
-        #         accurate_instances = (
-        #                 preds[covered_mask] != self.y_[covered_mask]).sum()
-        #         error_rate = accurate_instances / total_instances
-        #
-        #         new_error = _pessimistic_error_rate(total_instances,error_rate, 1.15)
-        #
-        #         if new_error <= base_line_error:
-        #             base_line_error = new_error
-        #         else:
-        #             ruleset.rules.append(deleted_rule)
-        #             break
-
-        # min_cov = self.min_samples / self.X_.shape[0]
-        ruleset.rules[:] = [rule for rule in ruleset
-                            if 0 < len(rule.A)  # <= self.max_antecedents
-                            and rule.cov > self.cov_threshold
-                            and rule.conf > self.conf_threshold]
-
-        # self._rule_heuristics.compute_rule_heuristics(ruleset, sequential_coverage=False)
-        self._rule_heuristics.compute_rule_heuristics(ruleset,
-                                                      sequential_covering=True)
-        self._sort_ruleset(ruleset)
-        # self.rule_heuristics.compute_rule_heuristics(ruleset, sequential_coverage=True)
 
     def _compute_pessimistic_error(self, conditions, class_index,
-                                   uncovered_instances=None):
+                                   not_cov_samples=None):
         """ Computes a statistical correction to the training error to
         estimate the generalization error of one rule.
 
@@ -1243,84 +1082,31 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         :return: the statistical correction of the training error of that
         rule (between 0 and 100)
         """
+
         if len(conditions) == 0:
-            e = (self.X_.shape[0] - popcount(
+            e = (self.X_.shape[
+                     0] - self._rule_heuristics.bitarray_.get_number_ones(
                 self._rule_heuristics.training_bit_sets[
                     class_index])) / self.X_.shape[0]
-            return 100 * _pessimistic_error_rate(self.X_.shape[0], e, 1.15)
-        # cov, class_cov = self.rule_heuristics.get_conditions_heuristics(conditions, return_set_size=True)
+            return 100 * _statistical_error_estimate(self.X_.shape[0], e,
+                                                     self.alpha_half_)
+
         heuristics_dict, _ = self._rule_heuristics.get_conditions_heuristics(
-            conditions, uncovered_mask=uncovered_instances)
+            conditions, not_cov_mask=not_cov_samples)
 
-        # print(heuristics_dict['cov_set'][-1])
-        # if not isinstance(heuristics_dict['cov_set'][-1],int):
-        #     stop =[]
         total_instances = heuristics_dict['cov_count']
-        # popcount(heuristics_dict['cov_set'][-1])
         accurate_instances = heuristics_dict['class_cov_count'][class_index]
-        # popcount(heuristics_dict['cov_set'][class_index])
-
         error_instances = total_instances - accurate_instances
-        alpha_half = 1.15  # 25 % confidence for C4.5
+
         if total_instances == 0:
             return 0
         else:
             e = error_instances / total_instances  # totalInstances
 
-        return 100 * _pessimistic_error_rate(total_instances, e, alpha_half)
+        return 100 * _statistical_error_estimate(total_instances, e,
+                                                 self.alpha_half_)
 
-    def _add_default_rule1(self, ruleset):
-        """ Add a default rule at the end of the ruleset depending different
-        criteria
-
-        :param ruleset: ruleset R to which the default rule will be added
-        """
-        if len(ruleset.rules) > 0:
-            uncovered_instances = ~ruleset._predict(self.X_)[1]
-        else:
-            uncovered_instances = np.ones((self.X_.shape[0],),
-                                          dtype=bool)
-
-        all_covered = False
-        if uncovered_instances.sum() == 0:
-            uncovered_dist = np.array(
-                [popcount(self._rule_heuristics.training_bit_sets[i]) for i in
-                 range(len(self.classes_))])
-            all_covered = True
-        else:
-            uncovered_labels = self.y_[uncovered_instances]
-            uncovered_dist = np.array(
-                [(uncovered_labels == class_).sum() for class_ in
-                 self.classes_])
-
-        default_class_idx = np.argmax(uncovered_dist)
-        default_rule = Rule({},
-                            class_dist=uncovered_dist / uncovered_dist.sum(),
-                            y=np.array([self.classes_[default_class_idx]]),
-                            y_class_index=default_class_idx,
-                            classes=self.classes_, n_samples=uncovered_dist)
-        if not all_covered:
-            default_rule.cov = uncovered_instances.sum() / self.X_.shape[0]
-            default_rule.conf = uncovered_dist[
-                                    default_class_idx] / uncovered_instances.sum()
-            default_rule.supp = uncovered_dist[default_class_idx] / \
-                                self.X_.shape[0]
-        ruleset.rules.append(default_rule)
-
-        default_class = default_rule.y
-        # rule_deleted = False
-
-        if len(ruleset.rules) > 3:
-            while ruleset.rules[-2].y == default_class and len(
-                    ruleset.rules) > 3:
-                # rule_deleted = True
-                ruleset.rules.pop(-2)
-                self._rule_heuristics.compute_rule_heuristics(ruleset,
-                                                              sequential_covering=True)
-
-        return True
-
-    def _add_default_rule(self, ruleset, last_iteration=False):
+    def _add_default_rule(self, ruleset):
         """ Add a default rule at the end of the ruleset depending different
         criteria
 
@@ -1328,46 +1114,35 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         """
 
         predictions, covered_instances = ruleset._predict(self.X_)
-        uncovered_instances = ~covered_instances
+        not_cov_samples = ~covered_instances
 
         all_covered = False
-        if uncovered_instances.sum() == 0:
+        if not_cov_samples.sum() == 0:
             uncovered_dist = np.array(
-                [popcount(self._rule_heuristics.training_bit_sets[i]) for i in
-                 range(len(self.classes_))])
+                [self._rule_heuristics.bitarray_.get_number_ones(
+                    self._rule_heuristics.training_bit_sets[i]) for i in
+                    range(len(self.classes_))])
             all_covered = True
         else:
-            uncovered_labels = self.y_[uncovered_instances]
+            uncovered_labels = self.y_[not_cov_samples]
             uncovered_dist = np.array(
                 [(uncovered_labels == class_).sum() for class_ in
                  self.classes_])
 
         default_class_idx = np.argmax(uncovered_dist)
-        predictions[uncovered_instances] = self.classes_[default_class_idx]
+        predictions[not_cov_samples] = self.classes_[default_class_idx]
         default_rule = Rule({},
                             class_dist=uncovered_dist / uncovered_dist.sum(),
                             y=np.array([self.classes_[default_class_idx]]),
                             y_class_index=default_class_idx,
                             classes=self.classes_, n_samples=uncovered_dist)
         if not all_covered:
-            default_rule.cov = uncovered_instances.sum() / self.X_.shape[0]
+            default_rule.cov = not_cov_samples.sum() / self.X_.shape[0]
             default_rule.conf = uncovered_dist[
-                                    default_class_idx] / uncovered_instances.sum()
+                                    default_class_idx] / not_cov_samples.sum()
             default_rule.supp = uncovered_dist[default_class_idx] / \
                                 self.X_.shape[0]
         ruleset.rules.append(default_rule)
-
-        default_class = default_rule.y
-        # rule_deleted = False
-
-        if last_iteration:
-            if len(ruleset.rules) > 3:
-                while ruleset.rules[-2].y == default_class and len(
-                        ruleset.rules) > 3:
-                    # rule_deleted = True
-                    ruleset.rules.pop(-2)
-                    self._rule_heuristics.compute_rule_heuristics(ruleset,
-                                                                  sequential_covering=True)
 
         return predictions
 
@@ -1384,10 +1159,9 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         parameter
         """
         y_pred = self._add_default_rule(combined_rules)
-        # combined_rules.compute_classification_performance(self.X_, self.y_,
-        #                                                   self.metric)
-        combined_rules.compute_classification_performance_fast(y_pred, self.y_,
-                                                          self.metric)
+
+        combined_rules.compute_class_perf_fast(y_pred, self.y_,
+                                               self.metric)
 
         # if rule_added:
         combined_rules.rules.pop()
@@ -1397,29 +1171,13 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
             self._early_stop_cnt = 0
             if self.verbose > 1:
                 print(
-                    f'\tBest {self.metric}, Combined rules: {combined_rules.metric(self.metric)}')
+                    f'\tBest {self.metric}, Combined rules: '
+                    f'{combined_rules.metric(self.metric)}')
             return combined_rules, 'comb'
         else:
             self._early_stop_cnt += 1
             if self.verbose > 1:
                 print(
-                    f'\tBest {self.metric}, Previous combined rules: {simplified_ruleset.metric(self.metric)}')
+                    f'\tBest {self.metric}, Previous combined rules: '
+                    f'{simplified_ruleset.metric(self.metric)}')
             return simplified_ruleset, 'simp'
-
-    def _weight_function(self, n, m):
-        if n == 0:
-            return 0
-        if self.m is None:
-            return n / (n + m)
-        else:
-            return n / (n + self.m)
-    # def _get_gbm_init(self):
-    #     """ get the initial estimate of a GBM ensemble
-    #
-    #     :return:
-    #     """
-    #     if isinstance(self.base_ensemble, GradientBoostingClassifier):
-    #         return self.base_ensemble._raw_predict_init(self.X_[0].reshape(1, -1))
-    #     if isinstance(self.base_ensemble, XGBClassifier):
-    #         return self.base_ensemble.base_score
-    #     return 0.0

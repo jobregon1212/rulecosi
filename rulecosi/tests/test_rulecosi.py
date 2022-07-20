@@ -1,20 +1,17 @@
 import pytest
 
-
-from sklearn.datasets import load_iris
-
-
+from sklearn.datasets import load_breast_cancer
 from rulecosi import RuleCOSIClassifier
 
 
 @pytest.fixture
 def data():
-    return load_iris(return_X_y=True)
+    return load_breast_cancer(return_X_y=True)
 
-def test_template_classifier(data):
+
+def test_rulecosi_classifier(data):
     X, y = data
     clf = RuleCOSIClassifier()
-    assert clf.demo_param == 'demo'
 
     clf.fit(X, y)
     assert hasattr(clf, 'classes_')

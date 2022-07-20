@@ -9,14 +9,8 @@ cache:
 
 matrix:
   include:
-    - env: PYTHON_VERSION="2.7" NUMPY_VERSION="1.13.1" SCIPY_VERSION="0.19.1"
-           SKLEARN_VERSION="0.19.1"
-    - env: PYTHON_VERSION="3.5" NUMPY_VERSION="1.13.1" SCIPY_VERSION="0.19.1"
-           SKLEARN_VERSION="0.19.1"
-    - env: PYTHON_VERSION="3.6" NUMPY_VERSION="1.13.1" SCIPY_VERSION="0.19.1"
-           SKLEARN_VERSION="0.19.1"
-    - env: PYTHON_VERSION="3.7" NUMPY_VERSION="*" SCIPY_VERSION="*"
-           SKLEARN_VERSION="*"
+    - env: PYTHON_VERSION="3.9" NUMPY_VERSION="1.22.3" SCIPY_VERSION="1.8.0"
+        SKLEARN_VERSION="1.0.2" GMPY2_VERSION="2.1.2" BITARRAY_VERSION="2.5.1"
 
 install:
   # install miniconda
@@ -29,7 +23,7 @@ install:
   # create the testing environment
   - conda create -n testenv --yes python=$PYTHON_VERSION pip
   - source activate testenv
-  - conda install --yes numpy==$NUMPY_VERSION scipy==$SCIPY_VERSION scikit-learn==$SKLEARN_VERSION nose pytest pytest-cov
+  - conda install --yes numpy==$NUMPY_VERSION scipy==$SCIPY_VERSION scikit-learn==$SKLEARN_VERSION bitarray==$BITARRAY_VERSION gmpy2==$GMPY2_VERSION nose pytest pytest-cov
   - pip install codecov
   - pip install .
 

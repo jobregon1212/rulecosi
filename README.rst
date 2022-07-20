@@ -1,21 +1,9 @@
 .. -*- mode: rst -*-
 
-|Travis|_ |AppVeyor|_ |Codecov|_ |CircleCI|_ |ReadTheDocs|_
+|Travis|_
 
-.. |Travis| image:: https://travis-ci.org/scikit-learn-contrib/project-template.svg?branch=master
-.. _Travis: https://travis-ci.org/scikit-learn-contrib/project-template
-
-.. |AppVeyor| image:: https://ci.appveyor.com/api/projects/status/coy2qqaqr1rnnt5y/branch/master?svg=true
-.. _AppVeyor: https://ci.appveyor.com/project/glemaitre/project-template
-
-.. |Codecov| image:: https://codecov.io/gh/scikit-learn-contrib/project-template/branch/master/graph/badge.svg
-.. _Codecov: https://codecov.io/gh/scikit-learn-contrib/project-template
-
-.. |CircleCI| image:: https://circleci.com/gh/scikit-learn-contrib/project-template.svg?style=shield&circle-token=:circle-token
-.. _CircleCI: https://circleci.com/gh/scikit-learn-contrib/project-template/tree/master
-
-.. |ReadTheDocs| image:: https://readthedocs.org/projects/sklearn-template/badge/?version=latest
-.. _ReadTheDocs: https://sklearn-template.readthedocs.io/en/latest/?badge=latest
+.. |Travis| image:: https://app.travis-ci.com/jobregon1212/rulecosi.svg?branch=master
+.. _Travis: https://app.travis-ci.com/jobregon1212/rulecosi.svg?branch=master
 
 RuleCOSI - Rule extraction COmbination and SImplification from classification tree ensembles
 ============================================================================================
@@ -34,18 +22,18 @@ Installation
 Dependencies
 ~~~~~~~~~~~~
 
-rulecosi is tested to work under Python 3.6+.
+rulecosi is tested to work under Python 3.9+.
 The dependency requirements used when developing the library are:
 
-* scipy(1.5.2)
-* numpy(1.19.1)
-* bitarray(1.5.2)
-* scikit-learn(0.24.1)
-* imbalanced-learn(0.7.0)
-* pandas(1.1.5)
-* xgboost(0.90) (optional)
-* lightgbm(3.1.1) (optional)
-* catboost(0.24) (optional)
+* numpy>=1.22.3
+* scipy>=1.8.0
+* scikit-learn>=1.0.2
+* gmpy2>=2.1.2
+* pandas>=1.4.1
+* bitarray>=2.5.1
+* xgboost>=1.5.2 (optional)
+* lightgbm>=3.3.2 (optional)
+* catboost>=1.0.4 (optional)
 
 Installation
 ~~~~~~~~~~~~
@@ -53,7 +41,7 @@ Installation
 From source available on GitHub
 ...............................
 
-Right now it is just agvailable from GitHub. You can clone it and run the setup.py file. Use the following
+Right now it is just available from GitHub. You can clone it and run the setup.py file. Use the following
 commands to get a copy from Github and install all basic dependencies::
 
   git clone https://github.com/jobregon1212/rulecosi.git
@@ -77,7 +65,7 @@ have to run the following command::
 The supported optional packages are xgboost, lightgbm and catboost.
 
 Documentation
------------
+-------------
 
 The python documentation is available in `this link
 <https://josue-obregon.com/rulecosi/>`_.

@@ -38,6 +38,7 @@ from abc import abstractmethod
 
 import numpy as np
 from tempfile import TemporaryDirectory
+from math import copysign
 
 from scipy.special import expit, logsumexp
 from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
@@ -53,11 +54,16 @@ class BaseRuleExtractor(metaclass=ABCMeta):
 
     """
 
-    def __init__(self, _ensemble, _column_names, classes_, X_):
+    def __init__(self, _ensemble, _column_names, classes_, X, y,
+                 float_threshold):
         self._column_names = _column_names
         self.classes_ = classes_
         self._ensemble = _ensemble
-        self.X_ = X_
+        self.X = X
+        self.y = y
+        self.float_threshold = float_threshold
+        _, counts = np.unique(self.y, return_counts=True)
+        self.class_ratio = counts.min() / counts.max()
 
     def get_tree_dict(self, base_tree, n_nodes=0):
         """ Create a dictionary with the information inside the base_tree
@@ -134,7 +140,7 @@ class BaseRuleExtractor(metaclass=ABCMeta):
                                                     node_index=0,
                                                     condition_map=condition_map,
                                                     condition_set=set())
-        return RuleSet(extracted_rules, condition_map)
+        return RuleSet(extracted_rules, condition_map, classes=self.classes_)
 
     def recursive_extraction(self, tree_dict, tree_index=0, node_index=0,
                              condition_map=None, condition_set=None):
@@ -179,15 +185,25 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             att_name = None
             if self._column_names is not None:
                 att_name = self._column_names[feature[node_index]]
-            condition_set_left = copy.deepcopy(condition_set)
+            condition_set_left = copy.copy(condition_set)
+            # condition_set_left = copy.copy(condition_set)
             # determine operators
             op_left, op_right = self.get_split_operators()
 
+            # -0 problem solution
+            split_value = threshold[node_index]
+            if abs(split_value) < self.float_threshold:
+                split_value = copysign(self.float_threshold, split_value)
+                # split_value=0
+                # print(split_value)
             new_condition_left = Condition(feature[node_index], op_left,
-                                           threshold[node_index],
+                                           # threshold[node_index],
+                                           split_value,
                                            att_name)
             condition_map[hash(new_condition_left)] = new_condition_left
-            condition_set_left.add(hash(new_condition_left))
+            # condition_set_left.add(hash(new_condition_left))
+            condition_set_left.add(
+                (hash(new_condition_left), new_condition_left))
             left_rules = self.recursive_extraction(tree_dict, tree_index,
                                                    node_index=children_left[
                                                        node_index],
@@ -195,12 +211,16 @@ class BaseRuleExtractor(metaclass=ABCMeta):
                                                    condition_map=condition_map)
             rules = rules + left_rules
 
-            condition_set_right = copy.deepcopy(condition_set)
+            condition_set_right = copy.copy(condition_set)
+            # condition_set_right = copy.copy(condition_set)
             new_condition_right = Condition(feature[node_index], op_right,
-                                            threshold[node_index],
+                                            # threshold[node_index],
+                                            split_value,
                                             att_name)
             condition_map[hash(new_condition_right)] = new_condition_right
-            condition_set_right.add(hash(new_condition_right))
+            # condition_set_right.add(hash(new_condition_right))
+            condition_set_right.add(
+                (hash(new_condition_right), new_condition_right))
             right_rules = self.recursive_extraction(tree_dict, tree_index,
                                                     node_index=children_right[
                                                         node_index],
@@ -291,10 +311,15 @@ class DecisionTreeRuleExtractor(BaseRuleExtractor):
         y = np.array([self.classes_[y_class_index]])
 
         return Rule(frozenset(condition_set), class_dist=class_dist,
+                    ens_class_dist=class_dist,
                     logit_score=logit_score, y=y,
                     y_class_index=y_class_index,
                     n_samples=n_samples[node_index], classes=self.classes_,
                     weight=weight)
+
+
+def get_class_dist(raw_to_proba):
+    return np.array([1 - raw_to_proba.item(), raw_to_proba.item()])
 
 
 class ClassifierRuleExtractor(BaseRuleExtractor):
@@ -374,14 +399,11 @@ class ClassifierRuleExtractor(BaseRuleExtractor):
         y = np.array([self.classes_[y_class_index]])
 
         return Rule(frozenset(condition_set), class_dist=class_dist,
+                    ens_class_dist=class_dist,
                     logit_score=logit_score, y=y,
                     y_class_index=y_class_index,
                     n_samples=n_samples[node_index], classes=self.classes_,
                     weight=weight)
-
-
-def _get_class_dist(raw_to_proba):
-    return np.array([1 - raw_to_proba.item(), raw_to_proba.item()])
 
 
 class GBMClassifierRuleExtractor(BaseRuleExtractor):
@@ -457,12 +479,15 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         logit_score = init + value[node_index]
         raw_to_proba = expit(logit_score)
         if len(self.classes_) == 2:
-            class_dist = _get_class_dist(raw_to_proba)
+            class_dist = get_class_dist(raw_to_proba)
         else:
             class_dist = logit_score - logsumexp(logit_score)
+
+        # predict y_class_index = np.argmax(class_dist).item()
         y_class_index = np.argmax(class_dist).item()
         y = np.array([self.classes_[y_class_index]])
         return Rule(frozenset(condition_set), class_dist=class_dist,
+                    ens_class_dist=class_dist,
                     logit_score=logit_score, y=y,
                     y_class_index=y_class_index,
                     n_samples=n_samples[node_index], classes=self.classes_,
@@ -473,7 +498,7 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
 
         :return: a double value of the initial estimate of the GBM ensemble
         """
-        return self._ensemble._raw_predict_init(self.X_[0].reshape(1, -1))
+        return self._ensemble._raw_predict_init(self.X[0].reshape(1, -1))
 
 
 class XGBClassifierExtractor(GBMClassifierRuleExtractor):
@@ -560,7 +585,19 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
         if 'children' in tree:
             tree_dict['children_left'][node_id] = tree['children'][0]['nodeid']
             tree_dict['children_right'][node_id] = tree['children'][1]['nodeid']
-            tree_dict['feature'][node_id] = int(tree['split'][1:])
+            # tree_dict['feature'][node_id] = int(tree['split'][1:])
+            if not str.isdigit(tree['split']):
+                tree_dict['feature'][node_id] = \
+                    int(tree['split'].replace('f', ''))
+                # 2022/04/16 change obtain directly the feature index
+                # np.where(self._column_names == tree['split'])[
+                #     0].item()  # 2021/23/06 change, the split directly
+
+                # print('feature: ', tree['split'])
+                # print('node_id: ', tree_dict['feature'][node_id])
+            else:
+                tree_dict['feature'][node_id] = int(
+                    tree['split'])  # 2021/23/06 change, the split directly
             tree_dict['threshold'][node_id] = tree['split_condition']
             self._populate_tree_dict(tree['children'][0], tree_dict)
             self._populate_tree_dict(tree['children'][1], tree_dict)
@@ -583,7 +620,7 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
         :return: a double value of the initial estimate of the GBM ensemble
         """
         if self._ensemble.base_score is None:
-            return 0.0
+            return self.class_ratio
         else:
             return self._ensemble.base_score
 
@@ -691,7 +728,7 @@ class LGBMClassifierExtractor(GBMClassifierRuleExtractor):
 
         :return: a double value of the initial estimate of the GBM ensemble
         """
-        return 0.0
+        return self.class_ratio
 
 
 class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
@@ -717,8 +754,10 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
     """
 
-    def __init__(self, _ensemble, _column_names, classes_, X_):
-        super().__init__(_ensemble, _column_names, classes_, X_)
+    def __init__(self, _ensemble, _column_names, classes_, X, y,
+                 float_threshold):
+        super().__init__(_ensemble, _column_names, classes_, X, y,
+                         float_threshold)
         self._splits = None
         self._leaf_nodes = None
 
@@ -818,7 +857,7 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
 
         :return: a double value of the initial estimate of the GBM ensemble
         """
-        return 0.0
+        return self.class_ratio
 
 
 class RuleExtractorFactory:
@@ -826,7 +865,8 @@ class RuleExtractorFactory:
 
     """
 
-    def get_rule_extractor(base_ensemble, column_names, classes, X):
+    def get_rule_extractor(base_ensemble, column_names, classes, X, y,
+                           float_threshold):
         """
 
         :param base_ensemble: BaseEnsemble object, default = None
@@ -854,19 +894,22 @@ class RuleExtractorFactory:
         if isinstance(base_ensemble, (
                 AdaBoostClassifier, BaggingClassifier, RandomForestClassifier)):
             return ClassifierRuleExtractor(base_ensemble, column_names, classes,
-                                           X)
+                                           X, y, float_threshold)
         elif isinstance(base_ensemble, GradientBoostingClassifier):
             return GBMClassifierRuleExtractor(base_ensemble, column_names,
-                                              classes, X)
-        elif str(base_ensemble.__class__) == "<class 'xgboost.sklearn.XGBClassifier'>":
+                                              classes, X, y, float_threshold)
+        elif str(
+                base_ensemble.__class__) == "<class 'xgboost.sklearn.XGBClassifier'>":
             return XGBClassifierExtractor(base_ensemble, column_names, classes,
-                                          X)
-        elif str(base_ensemble.__class__) == "<class 'lightgbm.sklearn.LGBMClassifier'>":
+                                          X, y, float_threshold)
+        elif str(
+                base_ensemble.__class__) == "<class 'lightgbm.sklearn.LGBMClassifier'>":
             return LGBMClassifierExtractor(base_ensemble, column_names, classes,
-                                           X)
-        elif str(base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
+                                           X, y, float_threshold)
+        elif str(
+                base_ensemble.__class__) == "<class 'catboost.core.CatBoostClassifier'>":
             return CatBoostClassifierExtractor(base_ensemble, column_names,
-                                               classes, X)
+                                               classes, X, y, float_threshold)
         elif isinstance(base_ensemble, DecisionTreeClassifier):
             return DecisionTreeRuleExtractor(base_ensemble, column_names,
-                                             classes, X)
+                                             classes, X, y, float_threshold)

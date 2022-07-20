@@ -1,6 +1,4 @@
 #! /usr/bin/env python
-"""A template for scikit-learn compatible packages."""
-
 import codecs
 import os
 
@@ -13,20 +11,20 @@ with open(ver_file) as f:
 
 DISTNAME = 'rulecosi'
 DESCRIPTION = 'A machine learning algorithm to combine and simplify rules ' \
-              'from ensembles of decision trees. '
+              'from classification tree ensembles. '
 with codecs.open('README.rst', encoding='utf-8-sig') as f:
     LONG_DESCRIPTION = f.read()
 MAINTAINER = 'J. Obregon'
 MAINTAINER_EMAIL = 'jobregon@khu.ac.kr'
 URL = 'http://josue-obregon.com/'
-LICENSE = 'new BSD'
+LICENSE = 'MIT'
 DOWNLOAD_URL = 'https://github.com/jobregon1212/rulecosi'
-VERSION = '0.0.1'
+VERSION = '0.0.2'
 INSTALL_REQUIRES = ['pandas', 'numpy', 'scipy', 'scikit-learn',
-                    'imbalanced-learn', 'bitarray']
+                    'bitarray', 'gmpy2']
 CLASSIFIERS = ['Intended Audience :: Science/Research',
                'Intended Audience :: Developers',
-               'License :: OSI Approved',
+               'License :: MIT',
                'Programming Language :: Python',
                'Topic :: Software Development',
                'Topic :: Scientific/Engineering',
@@ -47,9 +45,9 @@ EXTRAS_REQUIRE = {
         'numpydoc',
         'matplotlib'
     ],
-    'xgboost':['xgboost'],
-    'lightgbm':['lightgbm'],
-    'catboost':['catboost'],
+    'xgboost': ['xgboost'],
+    'lightgbm': ['lightgbm'],
+    'catboost': ['catboost'],
 }
 
 setup(name=DISTNAME,

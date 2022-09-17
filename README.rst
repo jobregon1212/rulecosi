@@ -84,15 +84,17 @@ About
 If you use rulecosi in a scientific publication, we would appreciate
 citations to the following paper::
 
-    @article{obregon2019rulecosi,
-      title={RuleCOSI: Combination and simplification of production rules from boosted decision trees for imbalanced classification},
-      author={Obregon, Josue and Kim, Aekyung and Jung, Jae-Yoon},
-      journal={Expert Systems with Applications},
-      volume={126},
-      pages={64--82},
-      year={2019},
-      publisher={Elsevier}
-    }
+    @article{obregon2022rulecosi+,
+    title = {RuleCOSI+: Rule extraction for interpreting classification tree ensembles},
+    journal = {Information Fusion},
+    volume = {89},
+    pages = {355-381},
+    year = {2023},
+    issn = {1566-2535},
+    doi = {https://doi.org/10.1016/j.inffus.2022.08.021},
+    url = {https://www.sciencedirect.com/science/article/pii/S1566253522001129},
+    author = {Josue Obregon and Jae-Yoon Jung}    
+}
 
 The algorithm works with different type of ensembles and it uses the implementations provided by the sklearn package.
 The supported tree ensemble types are:
@@ -110,5 +112,5 @@ For more information you can check the usage in the docstrings or the examples f
 References:
 -----------
 
-.. [1] Obregon, J., Kim, A., & Jung, J. Y. (2019). RuleCOSI: Combination and simplification of production rules from boosted decision trees for imbalanced classification. Expert Systems with Applications, 126, 64-82.
+.. [1] Obregon, J., & Jung, J. Y. (2023). RuleCOSI+: Rule extraction for interpreting classification tree ensembles. Information Fusion, 89, 355-381.
 

@@ -23,6 +23,7 @@ import time
 from abc import abstractmethod, ABCMeta
 from ast import literal_eval
 from math import sqrt
+from operator import attrgetter
 
 import numpy as np
 import pandas as pd
@@ -115,9 +116,6 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                  base_ensemble=None,
                  n_estimators=5,
                  tree_max_depth=3,
-                 cov_threshold=0.0,
-                 conf_threshold=0.5,
-                 c=0.25,
                  percent_training=None,
                  early_stop=0,
                  metric='f1',
@@ -125,13 +123,9 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                  column_names=None,
                  random_state=None,
                  verbose=0):
-
         self.base_ensemble = base_ensemble
         self.n_estimators = n_estimators
         self.tree_max_depth = tree_max_depth
-        self.cov_threshold = cov_threshold
-        self.conf_threshold = conf_threshold
-        self.c = c
         self.percent_training = percent_training
         self.early_stop = early_stop
         self.metric = metric
@@ -161,9 +155,322 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
         -------
         self : object
         """
+        pass
+
+    @abstractmethod
+    def _validate_and_create_base_ensemble(self):
+        """ Validate the parameter of base ensemble and if it is None,
+        it set the default ensemble GradientBoostingClassifier.
+
+        """
+
+        pass
+
+    @abstractmethod
+    def _remove_opposite_conditions(self, conditions, class_index):
+        """ Removes conditions that have disjoint regions and will make a
+        rule to be discarded because it would have null coverage.
+
+            This function is used with the trees generated with CatBoost
+            algorithm, which are called oblivious trees. This trees share the
+            same splits among entire levels. So The rules generated when
+            combining tend to create many rules with null coverage, so this
+            function helps to avoid this problem and explore better the
+            covered feature space combination.
+
+        :param conditions: set of conditions' ids
+
+        :param class_index: predicted class of the rule created with the set of
+        conditions
+
+        :return: set of conditions with no opposite conditions
+        """
+
+        pass
+
+    @abstractmethod
+    def _initialize_sets(self):
+        """ Initialize the sets that are going to be used during the
+        combination and simplification process This includes the set of good
+        combinations G and bad combinations B, but can include other sets
+        necessary to the combination process
+        """
+        pass
+
+    @abstractmethod
+    def _add_default_rule(self, ruleset):
+        """ Add a default rule at the end of the ruleset depending different
+        criteria
+
+        :param ruleset: ruleset R to which the default rule will be added
+        """
+        pass
+
+    @abstractmethod
+    def _combine_rulesets(self, ruleset1, ruleset2):
+        """ Combine all the rules belonging to ruleset1 and ruleset2 using
+        the procedure described in the paper [ref]
+
+        :param ruleset1: ruleset 1 to be combined
+
+        :param ruleset2: ruleset 2 to be combined
+
+        :return: a new ruleset containing the result of the combination process
+        """
+        pass
+
+    @abstractmethod
+    def _sequential_covering_pruning(self, ruleset):
+        """ Reduce the size of the ruleset by removing meaningless rules.
+
+        The function first, compute the heuristic of the ruleset, then it
+        sorts it and find the best rule. Then the covered instances are
+        removed from the training set and the process is repeated until one
+        of three stopping criteria are met: 1. all the records of the
+        training set are covered, 2. all the rules on ruleset are used or 3.
+        there is no rule that satisfies the coverage and accuracy constraints.
+
+        :param ruleset: ruleset R to be pruned
+        :return:
+        """
+        pass
+
+    @abstractmethod
+    def _simplify_rulesets(self, ruleset):
+        """Simplifies the ruleset using some loss metric.
+
+        The function simplify the ruleset by iteratively removing conditions
+        that minimize the pessimistic error. If all the conditions of a rule
+        are removed, then the rule is discarded.
+
+        :param ruleset:
+        :return:
+        """
+        pass
+
+    @abstractmethod
+    def _evaluate_combinations(self, simplified_ruleset, combined_rules):
+        """ Compare the performance of two rulesets and return the best one
+
+        :param simplified_ruleset: the simplified rules that are carried from
+        each iteration cycle :param combined_rules: the combined rules that
+        are obtained on each iteration of the combination cycle :return:the
+        ruleset with best performance in accordance to the metric parameter
+        """
+        pass
+
+
+class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
+    """ Tree ensemble Rule COmbiantion and SImplification algorithm for
+    classification
+
+    RuleCOSI extract, combines and simplify rules from a variety of tree
+    ensembles and then constructs a single rule-based model that can be used
+    for classification [1]. The ensemble is simpler and have a similar
+    classification performance compared than that of the original ensemble.
+    Currently only accept binary classification (March 2021)
+
+    Parameters
+    ----------
+    base_ensemble: BaseEnsemble object, default = None
+        A BaseEnsemble estimator object. The supported types are:
+       - :class:`sklearn.ensemble.RandomForestClassifier`
+       - :class:`sklearn.ensemble.BaggingClassifier`
+       - :class:`sklearn.ensemble.GradientBoostingClassifier`
+       - :class:`xgboost.XGBClassifier`
+       - :class:`catboost.CatBoostClassifier`
+       - :class:`lightgbm.LGBMClassifier`
+
+       If the estimator is already fitted, then the parameters n_estimators
+       and max_depth used for fitting the ensemble are used for the combination
+       process. If the estimator is not fitted, then the estimator will be
+       first fitted using the provided parameters in the RuleCOSI object.
+       Default value is None, which uses a
+       :class:`sklearn.ensemble.GradientBoostingClassifier` ensemble.
+
+    n_estimators: int, default=5
+        The number of estimators used for fitting the ensemble,
+        if it is not already fitted.
+
+    tree_max_depth: int, default=3
+        The maximum depth of the individual tree estimators. The maximum
+        depth limits the number of nodes in the tree. Tune this parameter
+        for best performance; the best value depends on the interaction
+        of the input variables.
+
+    cov_threshold: float, default=0.0
+        Coverage threshold of a rule to be considered for further combinations.
+        (beta in the paper)The greater the value the more rules are discarded.
+        Default value is 0.0, which it only discards rules with null coverage.
+
+    conf_threshold: float, default=0.5
+        Confidence or rule accuracy threshold of a rule to be considered for
+        further combinations (alpha in the paper). The greater the value, the
+        more rules are discarded. Rules with high confidence are accurate rules.
+        Default value is 0.5, which represents rules with higher than random
+        guessing accuracy.
+
+    c= float, 0.25
+        Confidence level for estimating the upper bound of the statistical
+        correction of the rule error. It is used for the generalization process.
+
+    percent_training= float, default=None
+        Percentage of the training used for the combination and simplification
+        process. If None, all the training data is usded. This is useful when
+        the training data is too big because it helps to accelerate the
+        simplification process. (experimental)
+
+    early_stop: float, default=0
+        This parameter allows the algorithm to stop if a certain amount of
+        iterations have passed without improving the metric. The amount is
+        obtained from the truncated integer of n_estimators * ealry_stop.
+
+    metric: string, default='f1'
+        Metric that is optimized in the combination process. The default is
+        f1. Other accepted measures are:
+         - 'roc_auc' for AUC under the ROC curve
+         - 'accuracy' for Accuracy
+
+    rule_order: string, default 'supp'
+        Defines the way in the rules are ordered on each iteration. 'cov' order
+        the rules first by coverage and 'conf' order the rules first by
+        confidence or rule accuracy. 'supp' orders the rule by their support.
+        This parameter affects the combination process and can be chosen
+        conveniently depending on the desired results.
+
+    sort_by_class: bool or list, default None
+        Define if the combined rules are ordered by class. If 'None', the rules
+        are not forced to be ordered (although in some cases the result will
+        be ordered). If 'True', the rules are ordered by class
+        lexicographically. If a list is provided, the rules will be ordered by
+        class following the order provided by the user. The list should
+        contain the actual classes passed in y when calling the fit method.
+
+    column_names: array of string, default=None
+        Array of strings with the name of the columns in the data. This is
+        useful for displaying the name of the features in the generated rules.
+
+    random_state: int, RandomState instance or None, default=None
+        Controls the random seed given to the ensembles when trained. RuleCOSI
+        does not have any random process, so it affects only the ensemble
+        training.
+
+    verbose: int, default=0
+        Controls the output of the algorithm during the combination process. It
+         can have the following values:
+        - 0 is silent
+        - 1 output only the main stages of the algorithm
+        - 2 output detailed information for each iteration
+
+    Attributes
+    ----------
+    X_ : ndarray, shape (n_samples, n_features)
+        The input passed during :meth:`fit`.
+
+    y_ : ndarray, shape (n_samples,)
+        The labels passed during :meth:`fit`.
+
+    classes_ : ndarray, shape (n_classes,)
+        The classes seen at :meth:`fit`.
+
+    original_rulesets_ : array of RuleSet, shape (n_estimators,)
+        The original rulesets extracted from the base ensemble.
+
+    simplified_ruleset_ : RuleSet
+        Combined and simplified ruleset extracted from the base ensemble.
+
+    n_combinations_ : int
+        Number of rule-level combinations performed by the algorithm.
+
+    combination_time_ : float
+        Time spent for the combination and simplification process
+
+    ensemble_training_time_ : float
+        Time spent for the ensemble training. If the ensemble was already
+        trained, this is 0.
+
+
+    References
+    ----------
+    .. [1] Obregon, J., Kim, A., & Jung, J. Y., "RuleCOSI: Combination and
+           simplification of production rules from boosted decision trees for
+           imbalanced classification", 2019.
+
+    Examples
+    --------
+    >>> from sklearn.ensemble import GradientBoostingClassifier
+    >>> from sklearn.datasets import make_classification
+    >>> from rulecosi import RuleCOSIClassifier
+    >>> X, y = make_classification(n_samples=1000, n_features=4,
+    ...                            n_informative=2, n_redundant=0,
+    ...                            random_state=0, shuffle=False)
+    >>> clf = RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(),
+    ...                          n_estimators=100, random_state=0)
+    >>> clf.fit(X, y)
+    RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(),
+                       n_estimators=100, random_state=0)
+    >>> clf.predict([[0, 0, 0, 0]])
+    array([1])
+    >>> clf.score(X, y)
+    0.966...
+
+    """
+
+    def __init__(self,
+                 base_ensemble=None,
+                 n_estimators=5,
+                 tree_max_depth=3,
+                 cov_threshold=0.0,
+                 conf_threshold=0.5,
+                 c=0.25,
+                 percent_training=None,
+                 early_stop=0,
+                 metric='f1',
+                 rule_order='supp',
+                 sort_by_class=None,
+                 float_threshold=1e-6,
+                 column_names=None,
+                 random_state=None,
+                 verbose=0
+                 ):
+        super().__init__(base_ensemble=base_ensemble,
+                         n_estimators=n_estimators,
+                         tree_max_depth=tree_max_depth,
+                         percent_training=percent_training,
+                         early_stop=early_stop,
+                         metric=metric,
+                         float_threshold=float_threshold,
+                         column_names=column_names,
+                         random_state=random_state,
+                         verbose=verbose
+                         )
+
+        self.cov_threshold = cov_threshold
+        self.conf_threshold = conf_threshold
+        self.c = c
+        self.rule_order = rule_order
+        self.sort_by_class = sort_by_class
+
+    def fit(self, X, y):
+        """ Combine and simplify the decision trees from the base ensemble
+        and builds a rule-based classifier using the training set (X,y)
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            The training input samples.
+
+        y : array-like, shape (n_samples,)
+            The target values. An array of int.
+
+
+
+        Returns
+        -------
+        self : object
+        """
         self._rule_extractor = None
         self._rule_heuristics = None
-        # self._rule_simplifier = None
         self._base_ens_type = None
         self._weights = None
         self._global_condition_map = None
@@ -202,6 +509,15 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                                           random_state=self.random_state)
             self.X_ = x
             self.y_ = y
+
+        # add rule ordering funcionality (2023.03.30)
+        self._sorting_list = ['cov', 'conf', 'supp']
+        self._sorting_list.remove(self.rule_order)
+        self._sorting_list.insert(0, self.rule_order)
+        self._sorting_list.reverse()
+        if self.sort_by_class is not None:
+            if isinstance(self.sort_by_class, bool):
+                self.sort_by_class = self.classes_.tolist()
 
         if self.n_estimators is None or self.n_estimators < 2:
             raise ValueError(
@@ -362,6 +678,81 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
                 f'R size: {len(self.simplified_ruleset_.rules)}, {self.metric}:'
                 f' {self.simplified_ruleset_.metric(self.metric)}')
 
+        return self
+
+    def _more_tags(self):
+        return {'binary_only': True}
+
+    def predict(self, X):
+        """ Predict classes for X.
+
+        The predicted class of an input sample. The prediction use the
+        simplified ruleset and evaluate the rules one by one. When a rule
+        covers a sample, the head of the rule is returned as predicted class.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            The input samples.
+
+        Returns
+        -------
+        y : ndarray, shape (n_samples,)
+            The predicted class. The class with the highest value in the class
+            distribution of the fired rule.
+        """
+        # Check is fit had been called
+        check_is_fitted(self)
+
+        # Input validation
+        X = check_array(X)
+        if self.X_.shape[1] != X.shape[1]:
+            raise ValueError(
+                f"X contains {X.shape[1]} features, but RuleCOSIClassifier was"
+                f" fitted with {self.X_.shape[1]}."
+            )
+
+        return self.simplified_ruleset_.predict(X)
+
+    def predict_proba(self, X):
+        """Predict class probabilities for X.
+
+        The predicted class probabilities of an input sample is obtained from
+        the class distribution of the fired rule.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            The input samples.
+
+        Returns
+        -------
+        p : ndarray of shape (n_samples, n_classes)
+            The class probabilities of the input samples. The order of
+            outputs is the same of that of the :term:`classes_` attribute.
+        """
+        # Check is fit had been called
+        check_is_fitted(self)
+
+        # Input validation
+        X = check_array(X)
+        if self.X_.shape[1] != X.shape[1]:
+            raise ValueError(
+                f"X contains {X.shape[1]} features, but RuleCOSIClassifier was"
+                f" fitted with {self.X_.shape[1]}."
+            )
+        return self.simplified_ruleset_.predict_proba(X)
+
+    def _initialize_sets(self):
+        """ Initialize the sets that are going to be used during the
+        combination and simplification process This includes the set of good
+        combinations G and bad combinations B. It also includes the bitsets
+        for the training data as well as the bitsets for each of the conditions
+        """
+        self._bad_combinations = set()
+        self._good_combinations = dict()
+        self._rule_heuristics.initialize_sets()
+
     def _validate_and_create_base_ensemble(self):
         """ Validate the parameter of base ensemble and if it is None,
         it set the default ensemble GradientBoostingClassifier.
@@ -458,354 +849,6 @@ class BaseRuleCOSI(BaseEstimator, metaclass=ABCMeta):
              for cond in list_conds]
         return frozenset(conditions)
 
-    @abstractmethod
-    def _initialize_sets(self):
-        """ Initialize the sets that are going to be used during the
-        combination and simplification process This includes the set of good
-        combinations G and bad combinations B, but can include other sets
-        necessary to the combination process
-        """
-        pass
-
-    @abstractmethod
-    def _add_default_rule(self, ruleset):
-        """ Add a default rule at the end of the ruleset depending different
-        criteria
-
-        :param ruleset: ruleset R to which the default rule will be added
-        """
-        pass
-
-    @abstractmethod
-    def _combine_rulesets(self, ruleset1, ruleset2):
-        """ Combine all the rules belonging to ruleset1 and ruleset2 using
-        the procedure described in the paper [ref]
-
-        :param ruleset1: ruleset 1 to be combined
-
-        :param ruleset2: ruleset 2 to be combined
-
-        :return: a new ruleset containing the result of the combination process
-        """
-        pass
-
-    @abstractmethod
-    def _sequential_covering_pruning(self, ruleset):
-        """ Reduce the size of the ruleset by removing meaningless rules.
-
-        The function first, compute the heuristic of the ruleset, then it
-        sorts it and find the best rule. Then the covered instances are
-        removed from the training set and the process is repeated until one
-        of three stopping criteria are met: 1. all the records of the
-        training set are covered, 2. all the rules on ruleset are used or 3.
-        there is no rule that satisfies the coverage and accuracy constraints.
-
-        :param ruleset: ruleset R to be pruned
-        :return:
-        """
-        pass
-
-    @abstractmethod
-    def _simplify_rulesets(self, ruleset):
-        """Simplifies the ruleset using the pessimist error.
-
-        The function simplify the ruleset by iteratively removing conditions
-        that minimize the pessimistic error. If all the conditions of a rule
-        are removed, then the rule is discarded.
-
-        :param ruleset:
-        :return:
-        """
-        pass
-
-    @abstractmethod
-    def _evaluate_combinations(self, simplified_ruleset, combined_rules):
-        """ Compare the performance of two rulesets and return the best one
-
-        :param simplified_ruleset: the simplified rules that are carried from
-        each iteration cycle :param combined_rules: the combined rules that
-        are obtained on each iteration of the combination cycle :return:the
-        ruleset with best performance in accordance to the metric parameter
-        """
-        pass
-
-
-class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
-    """ Tree ensemble Rule COmbiantion and SImplification algorithm for
-    classification
-
-    RuleCOSI extract, combines and simplify rules from a variety of tree
-    ensembles and then constructs a single rule-based model that can be used
-    for classification [1]. The ensemble is simpler and have a similar
-    classification performance compared than that of the original ensemble.
-    Currently only accept binary classification (March 2021)
-
-    Parameters
-    ----------
-    base_ensemble: BaseEnsemble object, default = None
-        A BaseEnsemble estimator object. The supported types are:
-       - :class:`sklearn.ensemble.RandomForestClassifier`
-       - :class:`sklearn.ensemble.BaggingClassifier`
-       - :class:`sklearn.ensemble.GradientBoostingClassifier`
-       - :class:`xgboost.XGBClassifier`
-       - :class:`catboost.CatBoostClassifier`
-       - :class:`lightgbm.LGBMClassifier`
-
-       If the estimator is already fitted, then the parameters n_estimators
-       and max_depth used for fitting the ensemble are used for the combination
-       process. If the estimator is not fitted, then the estimator will be
-       first fitted using the provided parameters in the RuleCOSI object.
-       Default value is None, which uses a
-       :class:`sklearn.ensemble.GradientBoostingClassifier` ensemble.
-
-    n_estimators: int, default=5
-        The number of estimators used for fitting the ensemble,
-        if it is not already fitted.
-
-    tree_max_depth: int, default=3
-        The maximum depth of the individual tree estimators. The maximum
-        depth limits the number of nodes in the tree. Tune this parameter
-        for best performance; the best value depends on the interaction
-        of the input variables.
-
-    cov_threshold: float, default=0.0
-        Coverage threshold of a rule to be considered for further combinations.
-        (beta in the paper)The greater the value the more rules are discarded.
-        Default value is 0.0, which it only discards rules with null coverage.
-
-    conf_threshold: float, default=0.5
-        Confidence or rule accuracy threshold of a rule to be considered for
-        further combinations (alpha in the paper). The greater the value, the
-        more rules are discarded. Rules with high confidence are accurate rules.
-        Default value is 0.5, which represents rules with higher than random
-        guessing accuracy.
-
-    c= float, 0.25
-        Confidence level for estimating the upper bound of the statistical
-        correction of the rule error. It is used for the generalization process.
-
-    percent_training= float, default=None
-        Percentage of the training used for the combination and simplification
-        process. If None, all the training data is usded. This is useful when
-        the training data is too big because it helps to accelerate the
-        simplification process. (experimental)
-
-    early_stop: float, default=0
-        This parameter allows the algorithm to stop if a certain amount of
-        iterations have passed without improving the metric. The amount is
-        obtained from the truncated integer of n_estimators * ealry_stop.
-
-    metric: string, default='f1'
-        Metric that is optimized in the combination process. The default is
-        f1. Other accepted measures are:
-         - 'roc_auc' for AUC under the ROC curve
-         - 'accuracy' for Accuracy
-
-    rule_order: string, default 'supp'
-        Defines the way in the rules are ordered on each iteration. 'cov' order
-        the rules first by coverage and 'conf' order the rules first by
-        confidence or rule accuracy. 'supp' orders the rule by their support.
-        This parameter affects the combination process and can be chosen
-        conveniently depending on the desired results.
-
-    column_names: array of string, default=None
-        Array of strings with the name of the columns in the data. This is
-        useful for displaying the name of the features in the generated rules.
-
-    random_state: int, RandomState instance or None, default=None
-        Controls the random seed given to the ensembles when trained. RuleCOSI
-        does not have any random process, so it affects only the ensemble
-        training.
-
-    verbose: int, default=0
-        Controls the output of the algorithm during the combination process. It
-         can have the following values:
-        - 0 is silent
-        - 1 output only the main stages of the algorithm
-        - 2 output detailed information for each iteration
-
-    Attributes
-    ----------
-    X_ : ndarray, shape (n_samples, n_features)
-        The input passed during :meth:`fit`.
-
-    y_ : ndarray, shape (n_samples,)
-        The labels passed during :meth:`fit`.
-
-    classes_ : ndarray, shape (n_classes,)
-        The classes seen at :meth:`fit`.
-
-    original_rulesets_ : array of RuleSet, shape (n_estimators,)
-        The original rulesets extracted from the base ensemble.
-
-    simplified_ruleset_ : RuleSet
-        Combined and simplified ruleset extracted from the base ensemble.
-
-    n_combinations_ : int
-        Number of rule-level combinations performed by the algorithm.
-
-    combination_time_ : float
-        Time spent for the combination and simplification process
-
-    ensemble_training_time_ : float
-        Time spent for the ensemble training. If the ensemble was already
-        trained, this is 0.
-
-
-    References
-    ----------
-    .. [1] Obregon, J., Kim, A., & Jung, J. Y., "RuleCOSI: Combination and
-           simplification of production rules from boosted decision trees for
-           imbalanced classification", 2019.
-
-    Examples
-    --------
-    >>> from sklearn.ensemble import GradientBoostingClassifier
-    >>> from sklearn.datasets import make_classification
-    >>> from rulecosi import RuleCOSIClassifier
-    >>> X, y = make_classification(n_samples=1000, n_features=4,
-    ...                            n_informative=2, n_redundant=0,
-    ...                            random_state=0, shuffle=False)
-    >>> clf = RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(),
-    ...                          n_estimators=100, random_state=0)
-    >>> clf.fit(X, y)
-    RuleCOSIClassifier(base_ensemble=GradientBoostingClassifier(),
-                       n_estimators=100, random_state=0)
-    >>> clf.predict([[0, 0, 0, 0]])
-    array([1])
-    >>> clf.score(X, y)
-    0.966...
-
-    """
-
-    def __init__(self,
-                 base_ensemble=None,
-                 n_estimators=5,
-                 tree_max_depth=3,
-                 cov_threshold=0.0,
-                 conf_threshold=0.5,
-                 c=0.25,
-                 percent_training=None,
-                 early_stop=0,
-                 metric='f1',
-                 rule_order='supp',
-                 float_threshold=1e-6,
-                 column_names=None,
-                 random_state=None,
-                 verbose=0
-                 ):
-        super().__init__(base_ensemble=base_ensemble,
-                         n_estimators=n_estimators,
-                         tree_max_depth=tree_max_depth,
-                         cov_threshold=cov_threshold,
-                         c=c,
-                         percent_training=percent_training,
-                         early_stop=early_stop,
-                         metric=metric,
-                         float_threshold=float_threshold,
-                         column_names=column_names,
-                         random_state=random_state,
-                         verbose=verbose
-                         )
-
-        self.conf_threshold = conf_threshold
-        self.rule_order = rule_order
-
-    def fit(self, X, y):
-        """ Combine and simplify the decision trees from the base ensemble
-        and builds a rule-based classifier using the training set (X,y)
-
-        Parameters
-        ----------
-        X : array-like, shape (n_samples, n_features)
-            The training input samples.
-
-        y : array-like, shape (n_samples,)
-            The target values. An array of int.
-
-
-
-        Returns
-        -------
-        self : object
-        """
-        super().fit(X, y)
-
-        return self
-
-    def _more_tags(self):
-        return {'binary_only': True}
-
-    def predict(self, X):
-        """ Predict classes for X.
-
-        The predicted class of an input sample. The prediction use the
-        simplified ruleset and evaluate the rules one by one. When a rule
-        covers a sample, the head of the rule is returned as predicted class.
-
-        Parameters
-        ----------
-        X : array-like, shape (n_samples, n_features)
-            The input samples.
-
-        Returns
-        -------
-        y : ndarray, shape (n_samples,)
-            The predicted class. The class with the highest value in the class
-            distribution of the fired rule.
-        """
-        # Check is fit had been called
-        check_is_fitted(self)
-
-        # Input validation
-        X = check_array(X)
-        if self.X_.shape[1] != X.shape[1]:
-            raise ValueError(
-                f"X contains {X.shape[1]} features, but RuleCOSIClassifier was"
-                f" fitted with {self.X_.shape[1]}."
-            )
-
-        return self.simplified_ruleset_.predict(X)
-
-    def predict_proba(self, X):
-        """Predict class probabilities for X.
-
-        The predicted class probabilities of an input sample is obtained from
-        the class distribution of the fired rule.
-
-        Parameters
-        ----------
-        X : array-like, shape (n_samples, n_features)
-            The input samples.
-
-        Returns
-        -------
-        p : ndarray of shape (n_samples, n_classes)
-            The class probabilities of the input samples. The order of
-            outputs is the same of that of the :term:`classes_` attribute.
-        """
-        # Check is fit had been called
-        check_is_fitted(self)
-
-        # Input validation
-        X = check_array(X)
-        if self.X_.shape[1] != X.shape[1]:
-            raise ValueError(
-                f"X contains {X.shape[1]} features, but RuleCOSIClassifier was"
-                f" fitted with {self.X_.shape[1]}."
-            )
-        return self.simplified_ruleset_.predict_proba(X)
-
-    def _initialize_sets(self):
-        """ Initialize the sets that are going to be used during the
-        combination and simplification process This includes the set of good
-        combinations G and bad combinations B. It also includes the bitsets
-        for the training data as well as the bitsets for each of the conditions
-        """
-        self._bad_combinations = set()
-        self._good_combinations = dict()
-        self._rule_heuristics.initialize_sets()
-
     def _sort_ruleset(self, ruleset):
         """ Sort the ruleset in place according to the rule_order parameter.
 
@@ -813,19 +856,26 @@ class RuleCOSIClassifier(ClassifierMixin, BaseRuleCOSI):
         """
         if len(ruleset.rules) == 0:
             return
-        if self.rule_order == 'cov':
-            ruleset.rules.sort(key=lambda rule: (rule.cov, rule.conf, rule.supp,
-                                                 -1 * len(rule.A),
-                                                 rule.str), reverse=True)
 
-        elif self.rule_order == 'conf':
-            ruleset.rules.sort(key=lambda rule: (rule.conf, rule.cov, rule.supp,
-                                                 -1 * len(rule.A),
-                                                 rule.str), reverse=True)
-        elif self.rule_order == 'supp':
-            ruleset.rules.sort(key=lambda rule: (rule.supp, rule.conf, rule.cov,
-                                                 -1 * len(rule.A),
-                                                 rule.str), reverse=True)
+        ruleset.rules.sort(key=lambda rule: (-1 * len(rule.A), rule.str))
+        for attr in self._sorting_list:
+            ruleset.rules.sort(key=attrgetter(attr), reverse=True)
+
+        if self.sort_by_class is not None:
+            ruleset.rules.sort(key=lambda rule: self.sort_by_class.index(rule.y.item()))
+        # if self.rule_order == 'cov':
+        #     ruleset.rules.sort(key=lambda rule: (rule.cov, rule.conf, rule.supp,
+        #                                          -1 * len(rule.A),
+        #                                          rule.str), reverse=True)
+        #
+        # elif self.rule_order == 'conf':
+        #     ruleset.rules.sort(key=lambda rule: (rule.conf, rule.cov, rule.supp,
+        #                                          -1 * len(rule.A),
+        #                                          rule.str), reverse=True)
+        # elif self.rule_order == 'supp':
+        #     ruleset.rules.sort(key=lambda rule: (rule.supp, rule.conf, rule.cov,
+        #                                          -1 * len(rule.A),
+        #                                          rule.str), reverse=True)
 
     def _combine_rulesets(self, ruleset1, ruleset2):
         """ Combine all the rules belonging to ruleset1 and ruleset2 using

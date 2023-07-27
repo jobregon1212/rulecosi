@@ -40,7 +40,7 @@ import numpy as np
 from tempfile import TemporaryDirectory
 from math import copysign
 
-from scipy.special import expit, logsumexp
+from scipy.special import expit, logsumexp, softmax
 from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
 from sklearn.ensemble import BaggingClassifier, GradientBoostingClassifier
 from sklearn.tree import DecisionTreeClassifier
@@ -86,7 +86,7 @@ class BaseRuleExtractor(metaclass=ABCMeta):
     @abstractmethod
     def create_new_rule(self, node_index, tree_dict, condition_set=None,
                         logit_score=None, weights=None,
-                        tree_index=None):
+                        tree_index=None, class_index=None):
         """ Creates a new rule with all the information in the parameters
 
         :param node_index: the index of the leaf node
@@ -103,6 +103,8 @@ class BaseRuleExtractor(metaclass=ABCMeta):
         :param weights: weight of the new rule
 
         :param tree_index: index of the tree inside the ensemble
+
+        :param class_index: index of the class that this rule predicts
 
         :return: a :class:`rulecosi.rules.Rule` object
         """
@@ -137,15 +139,18 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             condition_map = dict()  # dictionary of conditions A
 
         extracted_rules = self.recursive_extraction(tree_dict, tree_index,
+                                                    class_index=class_index,
                                                     node_index=0,
                                                     condition_map=condition_map,
                                                     condition_set=set())
         return RuleSet(extracted_rules, condition_map, classes=self.classes_)
 
-    def recursive_extraction(self, tree_dict, tree_index=0, node_index=0,
+    def recursive_extraction(self, tree_dict, tree_index=0, class_index=None,
+                             node_index=0,
                              condition_map=None, condition_set=None):
         """ Recursive function for extracting a ruleset from a tree
 
+        :param class_index: class index for which this tree predicts to
         :param tree_dict: a dictionary containing  the information of the
         base_tree (arrays on :class: `sklearn.tree.Tree` class
 
@@ -178,7 +183,7 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             logit_score = None
             new_rule = self.create_new_rule(node_index, tree_dict,
                                             condition_set, logit_score, weights,
-                                            tree_index)
+                                            tree_index, class_index=class_index)
             rules.append(new_rule)
         else:
             # create condition, add it to the condition_set and get conditions from left and right child
@@ -207,6 +212,7 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             left_rules = self.recursive_extraction(tree_dict, tree_index,
                                                    node_index=children_left[
                                                        node_index],
+                                                   class_index=class_index,
                                                    condition_set=condition_set_left,
                                                    condition_map=condition_map)
             rules = rules + left_rules
@@ -222,6 +228,7 @@ class BaseRuleExtractor(metaclass=ABCMeta):
             condition_set_right.add(
                 (hash(new_condition_right), new_condition_right))
             right_rules = self.recursive_extraction(tree_dict, tree_index,
+                                                    class_index=class_index,
                                                     node_index=children_right[
                                                         node_index],
                                                     condition_set=condition_set_right,
@@ -275,8 +282,9 @@ class DecisionTreeRuleExtractor(BaseRuleExtractor):
 
     def create_new_rule(self, node_index, tree_dict, condition_set=None,
                         logit_score=None, weights=None,
-                        tree_index=None):
+                        tree_index=None, class_index=None):
         """ Creates a new rule with all the information in the parameters
+
 
         :param node_index: the index of the leaf node
 
@@ -292,6 +300,8 @@ class DecisionTreeRuleExtractor(BaseRuleExtractor):
         :param weights: weight of the new rule
 
         :param tree_index: index of the tree inside the ensemble
+
+        :param class_index: index of the class that this rule predicts
 
         :return: a :class:`rulecosi.rules.Rule` object
         """
@@ -363,7 +373,7 @@ class ClassifierRuleExtractor(BaseRuleExtractor):
 
     def create_new_rule(self, node_index, tree_dict, condition_set=None,
                         logit_score=None, weights=None,
-                        tree_index=None):
+                        tree_index=None, class_index=None):
         """ Creates a new rule with all the information in the parameters
 
         :param node_index: the index of the leaf node
@@ -378,6 +388,8 @@ class ClassifierRuleExtractor(BaseRuleExtractor):
         Gradient Boosting Trees)
 
         :param weights: weight of the new rule
+
+        :param class_index: index of the class that this rule predicts
 
         :param tree_index: index of the tree inside the ensemble
 
@@ -437,17 +449,35 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         rulesets = []
         global_condition_map = dict()
         for tree_index, base_trees in enumerate(self._ensemble):
+            original_ruleset = None
             for class_index, base_tree in enumerate(base_trees):
-                original_ruleset = self.get_base_ruleset(
-                    self.get_tree_dict(base_tree),
-                    class_index=class_index, tree_index=tree_index)
-                rulesets.append(original_ruleset)
-                global_condition_map.update(original_ruleset.condition_map)
+                if len(self.classes_) > 2:
+                    if class_index == 0:
+                        original_ruleset = self.get_base_ruleset(
+                            self.get_tree_dict(base_tree),
+                            class_index=class_index, tree_index=tree_index)
+                        global_condition_map.update(
+                            original_ruleset.condition_map)
+                    else:
+                        class_ruleset = self.get_base_ruleset(
+                            self.get_tree_dict(base_tree),
+                            class_index=class_index, tree_index=tree_index)
+                        global_condition_map.update(
+                            original_ruleset.condition_map)
+                        original_ruleset.rules += class_ruleset.rules
+                        original_ruleset.condition_map.update(
+                            class_ruleset.condition_map)
+                else:
+                    original_ruleset = self.get_base_ruleset(
+                        self.get_tree_dict(base_tree),
+                        class_index=None, tree_index=tree_index)
+            rulesets.append(original_ruleset)
+            global_condition_map.update(original_ruleset.condition_map)
         return rulesets, global_condition_map
 
     def create_new_rule(self, node_index, tree_dict, condition_set=None,
                         logit_score=None, weights=None,
-                        tree_index=None):
+                        tree_index=None, class_index=None):
         """ Creates a new rule with all the information in the parameters
 
         :param node_index: the index of the leaf node
@@ -462,7 +492,10 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
         Gradient Boosting Trees)
 
         :param weights: weight of the new rule
+
         :param tree_index: index of the tree inside the ensemble
+
+        :param class_index: index of the class that this rule predicts
 
         :return: a :class:`rulecosi.rules.Rule` object
         """
@@ -477,14 +510,24 @@ class GBMClassifierRuleExtractor(BaseRuleExtractor):
             init = np.zeros(value[node_index].shape)
 
         logit_score = init + value[node_index]
-        raw_to_proba = expit(logit_score)
+
         if len(self.classes_) == 2:
+            raw_to_proba = expit(logit_score)
             class_dist = get_class_dist(raw_to_proba)
         else:
-            class_dist = logit_score - logsumexp(logit_score)
+            # raw_to_proba = logsumexp(logit_score)
+            class_dist = np.zeros(len(self.classes_))
+            if isinstance(logit_score, np.ndarray):
+                class_dist[class_index] = logsumexp(logit_score)
+            else:
+                class_dist[class_index] = expit(logit_score)
+                # class_dist[class_index] = expit(
+                #     logit_score)  # logsumexp(logit_score)  # softmax(raw_to_proba)
+            # class_dist = logit_score - logsumexp(logit_score)
 
         # predict y_class_index = np.argmax(class_dist).item()
-        y_class_index = np.argmax(class_dist).item()
+        # y_class_index = np.argmax(class_dist).item()
+        y_class_index = np.argmax(class_dist)
         y = np.array([self.classes_[y_class_index]])
         return Rule(frozenset(condition_set), class_dist=class_dist,
                     ens_class_dist=class_dist,
@@ -531,16 +574,49 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
         rulesets = []
         global_condition_map = dict()
         booster = self._ensemble.get_booster()
+        booster.feature_names = self._column_names.to_list()
         xgb_tree_dicts = booster.get_dump(dump_format='json')
         n_nodes = booster.trees_to_dataframe()[['Tree', 'Node']].groupby(
             'Tree').count().to_numpy()
-        for tree_index, xgb_tree_dict in enumerate(xgb_tree_dicts):
-            original_ruleset = self.get_base_ruleset(
-                self.get_tree_dict(xgb_tree_dict, n_nodes[tree_index]),
-                class_index=0, tree_index=tree_index)
-            rulesets.append(original_ruleset)
-            global_condition_map.update(original_ruleset.condition_map)
-        return rulesets, global_condition_map
+        if len(self.classes_) > 2:
+            # ct_list = [(cid, tid)  # class tree pair list
+            #            for tid in [0, 1, 2]
+            #            for cid in self.classes_]
+            # for (t_idx, (xgb_t_dict, (cid, tid))) in enumerate(
+            #         zip(xgb_tree_dicts, ct_list)):
+            t_idx = 0
+            for tid in range(self._ensemble.n_estimators):
+                current_tree_rules = []
+                current_tree_condition_map = dict()
+                for cid, _ in enumerate(self.classes_):
+                    # booster_df = booster.trees_to_dataframe()
+                    # n_nodes = booster_df[booster_df['Tree'] == t_idx][
+                    #     ['Tree', 'Node']].groupby(
+                    #     'Tree').count().to_numpy().item()
+                    original_ruleset = self.get_base_ruleset(
+                        self.get_tree_dict(xgb_tree_dicts[t_idx],
+                                           n_nodes[t_idx]),
+                        class_index=cid, tree_index=tid)
+                    current_tree_rules.extend(original_ruleset.rules)
+                    current_tree_condition_map.update(
+                        original_ruleset.condition_map)
+                    t_idx += 1
+                current_tree_ruleset = RuleSet(current_tree_rules,
+                                               current_tree_condition_map,
+                                               classes=self.classes_)
+                global_condition_map.update(current_tree_ruleset.condition_map)
+                rulesets.append(current_tree_ruleset)
+            return rulesets, global_condition_map
+
+        else:  # binary classification
+
+            for t_idx, xgb_t_dict in enumerate(xgb_tree_dicts):
+                original_ruleset = self.get_base_ruleset(
+                    self.get_tree_dict(xgb_t_dict, n_nodes[t_idx]),
+                    class_index=0, tree_index=t_idx)
+                rulesets.append(original_ruleset)
+                global_condition_map.update(original_ruleset.condition_map)
+            return rulesets, global_condition_map
 
     # def _get_class_dist(self, raw_to_proba):
     #     return np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
@@ -586,18 +662,25 @@ class XGBClassifierExtractor(GBMClassifierRuleExtractor):
             tree_dict['children_left'][node_id] = tree['children'][0]['nodeid']
             tree_dict['children_right'][node_id] = tree['children'][1]['nodeid']
             # tree_dict['feature'][node_id] = int(tree['split'][1:])
-            if not str.isdigit(tree['split']):
-                tree_dict['feature'][node_id] = \
-                    int(tree['split'].replace('f', ''))
-                # 2022/04/16 change obtain directly the feature index
-                # np.where(self._column_names == tree['split'])[
-                #     0].item()  # 2021/23/06 change, the split directly
+            # if not str.isdigit(tree['split']):
+            # new change 2023/03/14 . setting feature names before
+            # dumping allows to ensure feature names are preserved from
+            # self.column_names
+            tree_dict['feature'][node_id] = \
+                np.where(self._column_names == tree['split'])[
+                    0].item()  # 2021/23/06 change, the split directly
 
-                # print('feature: ', tree['split'])
-                # print('node_id: ', tree_dict['feature'][node_id])
-            else:
-                tree_dict['feature'][node_id] = int(
-                    tree['split'])  # 2021/23/06 change, the split directly
+            # tree_dict['feature'][node_id] = \
+            #     int(tree['split'].replace('f', ''))
+            # 2022/04/16 change obtain directly the feature index
+            # np.where(self._column_names == tree['split'])[
+            #     0].item()  # 2021/23/06 change, the split directly
+
+            # print('feature: ', tree['split'])
+            # print('node_id: ', tree_dict['feature'][node_id])
+            # else:
+            #     tree_dict['feature'][node_id] = int(
+            #         tree['split'])  # 2021/23/06 change, the split directly
             tree_dict['threshold'][node_id] = tree['split_condition']
             self._populate_tree_dict(tree['children'][0], tree_dict)
             self._populate_tree_dict(tree['children'][1], tree_dict)
@@ -657,16 +740,42 @@ class LGBMClassifierExtractor(GBMClassifierRuleExtractor):
         global_condition_map = dict()
         booster = self._ensemble.booster_
         lgbm_tree_dicts = booster.dump_model()['tree_info']
-        for tree_index, lgbm_tree_dict in enumerate(lgbm_tree_dicts):
-            n_nodes = count_keys(lgbm_tree_dict, 'split_index') + \
-                      count_keys(lgbm_tree_dict, 'leaf_index')
 
-            original_ruleset = self.get_base_ruleset(
-                self.get_tree_dict(lgbm_tree_dict, n_nodes),
-                class_index=0, tree_index=tree_index)
-            rulesets.append(original_ruleset)
-            global_condition_map.update(original_ruleset.condition_map)
-        return rulesets, global_condition_map
+        if len(self.classes_) > 2:
+            t_idx = 0
+            for tid in range(self._ensemble.n_estimators):
+                current_tree_rules = []
+                current_tree_condition_map = dict()
+                for cid, _ in enumerate(self.classes_):
+                    n_nodes = count_keys(lgbm_tree_dicts[t_idx],
+                                         'split_index') + \
+                              count_keys(lgbm_tree_dicts[t_idx], 'leaf_index')
+                    original_ruleset = self.get_base_ruleset(
+                        self.get_tree_dict(lgbm_tree_dicts[t_idx],
+                                           n_nodes),
+                        class_index=cid, tree_index=tid)
+                    current_tree_rules.extend(original_ruleset.rules)
+                    current_tree_condition_map.update(
+                        original_ruleset.condition_map)
+                    t_idx += 1
+                current_tree_ruleset = RuleSet(current_tree_rules,
+                                               current_tree_condition_map,
+                                               classes=self.classes_)
+                global_condition_map.update(current_tree_ruleset.condition_map)
+                rulesets.append(current_tree_ruleset)
+            return rulesets, global_condition_map
+
+        else:  # binary classification
+            for tree_index, lgbm_tree_dict in enumerate(lgbm_tree_dicts):
+                n_nodes = count_keys(lgbm_tree_dict, 'split_index') + \
+                          count_keys(lgbm_tree_dict, 'leaf_index')
+
+                original_ruleset = self.get_base_ruleset(
+                    self.get_tree_dict(lgbm_tree_dict, n_nodes),
+                    class_index=0, tree_index=tree_index)
+                rulesets.append(original_ruleset)
+                global_condition_map.update(original_ruleset.condition_map)
+            return rulesets, global_condition_map
 
     # def _get_class_dist(self, raw_to_proba):
     #     return np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
@@ -774,19 +883,45 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
             cat_model = json.load(
                 open(path.join(tmp_dir_name, 'cat_tree.json'), encoding='utf8'))
         cat_tree_dicts = cat_model['oblivious_trees']
-        for tree_index, cat_tree_dict in enumerate(cat_tree_dicts):
-            tree_depth = len(cat_tree_dict['splits'])
-            n_nodes = 2 ** (tree_depth + 1) - 1
 
-            original_ruleset = self.get_base_ruleset(
-                self.get_tree_dict(cat_tree_dict, n_nodes),
-                class_index=0, tree_index=tree_index)
-            # remove rules with logit_score = 0
-            original_ruleset.rules[:] = [rule for rule in original_ruleset.rules
-                                         if rule.logit_score != 0]
-            rulesets.append(original_ruleset)
-            global_condition_map.update(original_ruleset.condition_map)
-        return rulesets, global_condition_map
+        if len(self.classes_) > 2:
+            for tid, cat_tree_dict in enumerate(cat_tree_dicts):
+                current_tree_rules = []
+                current_tree_condition_map = dict()
+                tree_depth = len(cat_tree_dict['splits'])
+                n_nodes = 2 ** (tree_depth + 1) - 1
+                for cid, _ in enumerate(self.classes_):
+                    original_ruleset = self.get_base_ruleset(
+                        self.get_tree_dict(cat_tree_dict, n_nodes),
+                        class_index=cid, tree_index=tid)
+                    # remove rules with logit_score = 0
+                    original_ruleset.rules[:] = [rule for rule in
+                                                 original_ruleset.rules
+                                                 if rule.logit_score != 0]
+                    current_tree_rules.extend(original_ruleset.rules)
+                    current_tree_condition_map.update(
+                        original_ruleset.condition_map)
+                current_tree_ruleset = RuleSet(current_tree_rules,
+                                               current_tree_condition_map,
+                                               classes=self.classes_)
+                global_condition_map.update(current_tree_ruleset.condition_map)
+                rulesets.append(current_tree_ruleset)
+            return rulesets, global_condition_map
+        else:
+            for tree_index, cat_tree_dict in enumerate(cat_tree_dicts):
+                tree_depth = len(cat_tree_dict['splits'])
+                n_nodes = 2 ** (tree_depth + 1) - 1
+
+                original_ruleset = self.get_base_ruleset(
+                    self.get_tree_dict(cat_tree_dict, n_nodes),
+                    tree_index=tree_index)
+                # remove rules with logit_score = 0
+                original_ruleset.rules[:] = [rule for rule in
+                                             original_ruleset.rules
+                                             if rule.logit_score != 0]
+                rulesets.append(original_ruleset)
+                global_condition_map.update(original_ruleset.condition_map)
+            return rulesets, global_condition_map
 
     # def _get_class_dist(self, raw_to_proba):
     #     return np.array([raw_to_proba.item(), 1 - raw_to_proba.item()])
@@ -798,6 +933,7 @@ class CatBoostClassifierExtractor(GBMClassifierRuleExtractor):
         representation of a tree
 
         :param n_nodes: number of nodes in the tree
+
 
         :return: a dictionary conatining the information of the base_tree
         """

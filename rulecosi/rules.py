@@ -63,6 +63,14 @@ class RuleSet:
         self.f1_score = 0
         self.accuracy_score = 0
         self.roc_auc = 0
+        self.class_type = None
+
+        if isinstance(self.classes[0], str):
+            long_idx = max(enumerate(self.classes), key=lambda x: len(x[1]))[0]
+            self.class_type = self.classes[long_idx].dtype
+        else:
+            self.class_type = self.classes[0].dtype
+
 
     def prune_condition_map(self):
         """Prune the condition map in this ruleset to contain only the
@@ -263,7 +271,7 @@ class RuleSet:
                 (X.shape[0], self.classes.shape[0]))
         else:
             prediction = np.zeros((X.shape[0], self.y_shape),
-                                  dtype=self.classes[0].dtype)
+                                  dtype=self.class_type)
 
         covered_mask = np.zeros((X.shape[0],),
                                 dtype=bool)  # records the records that are

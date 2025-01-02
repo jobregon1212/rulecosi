@@ -2,10 +2,12 @@
 
 """
 
-import numpy as np
-import pandas as pd
 import operator
 from functools import reduce
+
+import numpy as np
+import pandas as pd
+
 
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from sklearn.utils import check_array
@@ -301,6 +303,7 @@ class RuleSet:
                format
             - 'dataframe': returns a :class:`pandas.DataFrame` object containing
                the rules
+            - 'dict': returns a dictionary object containing the rules
 
         :param heuristics_digits: number of decimal digits to be displayed in
         the heuristics of the rules
@@ -312,10 +315,16 @@ class RuleSet:
         """
 
         return_str = 'cov \tconf \tsupp \tsamples \t\trule\n'
-        columns = ['cov', 'conf', 'supp', 'samples', '#', 'A', 'y']
+        columns = ['cov', 'conf', 'supp', 'samples', '#', 'A', 'y']        
         rule_rows = []
+        rules_dict = {
+            'number of rules': len(self.rules),
+            'accuracy': self.accuracy_score,
+            'f-measure': self.f1_score,
+            'rules': list() 
+            }
         i = 1
-        for rule in self:
+        for rule in self:            
             samples = ','.join(rule.n_samples.astype(str))
             samples = f'[{samples}]'
             if len(samples) > 7:
@@ -329,25 +338,42 @@ class RuleSet:
             rule_row = [f'{rule.cov:.{heuristics_digits}f}',
                         f'{rule.conf:.{heuristics_digits}f}',
                         f'{rule.supp:.{heuristics_digits}f}', samples, f'r_{i}']
+            rule_d = {
+                'rule_id' : i,
+                'Coverage of the rule': f'{rule.cov:.{heuristics_digits}f}',
+                'Confidence of the rule': f'{rule.conf:.{heuristics_digits}f}',
+                'Support of the rule': f'{rule.supp:.{heuristics_digits}f}',
+                'Sample distribution of the rule': samples,
+            }
             if len(rule.A) == 0:
                 rule_string = rule_string + '( )'
                 rule_row.append('()')
+                rule_d['Body of the rule'] = '()'
+                rule_d['is default rule'] = True
             else:
                 A_string = ' ˄ '.join(sorted([cond[1].__str__(
                     digits=condition_digits) for cond in rule.A]))
                 rule_string = rule_string + A_string
                 rule_row.append(A_string)
+                rule_d['Body of the rule'] = A_string
+                rule_d['is default rule'] = False
             rule_string += ' → ' + str(rule.y)
             rule_row.append(rule.y)
+            rule_d['Head of the rule'] = rule.y.item()
             rule_string += '\n'
             return_str += rule_string
             i += 1
             rule_rows.append(rule_row)
+            rules_dict['rules'].append(rule_d)
         if return_object is not None:
             if return_object == 'string':
                 return return_str
             elif return_object == 'dataframe':
                 return pd.DataFrame(data=rule_rows, columns=columns)
+            elif return_object == 'dict':
+                return rules_dict
+            else:
+                return return_str
         else:
             print(return_str)
 
